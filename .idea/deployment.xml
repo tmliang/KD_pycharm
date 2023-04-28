@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" autoUpload="Always" serverName="data center" confirmBeforeUploading="false" confirmBeforeDeletion="false" showAutoUploadSettingsWarning="false">
+    <option name="confirmBeforeDeletion" value="false" />
+    <option name="confirmBeforeUploading" value="false" />
+    <serverData>
+      <paths name="28">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/KD" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="28-3090">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="31">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/KD" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath path="/KD/data" />
+            <excludedPath path="/KD/datasets" />
+            <excludedPath path="/KD/TRANSFORMERS_CACHE" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
+      <paths name="31-atp">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/KD" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="41">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="76">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/KD" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath path="/KD/ckpt" />
+            <excludedPath path="/KD/data" />
+            <excludedPath path="/KD/TRANSFORMERS_CACHE" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
+      <paths name="76-atp">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/KD" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath path="/KD/data" />
+            <excludedPath path="/KD/ckpt" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
+      <paths name="FrozenBiLM">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="atp">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
+  </component>
+</project>
