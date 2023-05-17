@@ -312,7 +312,8 @@ def main(args):
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
     optimizer = torch.optim.Adam(
         params_for_optimization,
-        lr=args.lr
+        lr=args.lr,
+        betas=(args.beta1, args.beta2),
     )
 
     # Load pretrained checkpoint

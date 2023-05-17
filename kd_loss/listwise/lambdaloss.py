@@ -8,8 +8,8 @@ class LambdaLoss(BaseLoss):
     Wang, Xuanhui and Li, Cheng and Golbandi, Nadav and Bendersky, Michael and Najork, Marc. 2018.
     The LambdaLoss Framework for Ranking Metric Optimization. ICIKM. 1313–1322.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, s_neg=False, weight_scheme='ndcg1', sigma=1., mu=1.):
-        super().__init__(n_pos, n_neg, neg_sampler, s_neg)
+    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, weight_scheme='ndcg1', sigma=1., mu=1.):
+        super().__init__(n_pos, n_neg, neg_sampler)
         self.weight_scheme = weight_scheme
         self.sigma = sigma
         self.mu = mu

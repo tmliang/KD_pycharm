@@ -8,10 +8,8 @@ class STListNet(BaseLoss):
     Bruch, Sebastian and Han, Shuguang and Bendersky, Michael and Najork, Marc. 2020.
     A Stochastic Treatment of Learning to Rank Scoring Functions. WSDM.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, s_neg=False, temperature=1):
-        super().__init__(n_pos, n_neg, neg_sampler, s_neg)
-        self.s_neg = s_neg
-        self.neg_sampler = neg_sampler
+    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, temperature=1):
+        super().__init__(n_pos, n_neg, neg_sampler)
         self.temperature = temperature
 
     def forward(self, gt, t_score, s_score):

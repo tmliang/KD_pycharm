@@ -9,8 +9,8 @@ class MarginMSE(BaseLoss):
     Improving Efficient Neural Ranking Models with Cross-Architecture Knowledge Distillation. 2020.
     https://arxiv.org/abs/2010.02666.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, s_neg=False, margin=0):
-        super().__init__(n_pos, n_neg, neg_sampler, s_neg)
+    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, margin=0):
+        super().__init__(n_pos, n_neg, neg_sampler)
         self.margin = margin
         self.mse_loss = nn.MSELoss(reduction='mean')
 

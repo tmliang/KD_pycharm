@@ -8,8 +8,8 @@ class RankNet(BaseLoss):
     """
     Learning to rank using gradient descent. ICML, 2005.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, s_neg=False, sigma=1.):
-        super().__init__(n_pos, n_neg, neg_sampler, s_neg)
+    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, sigma=1.):
+        super().__init__(n_pos, n_neg, neg_sampler)
         self.neg_sampler = neg_sampler
         self.sigma = sigma
 

@@ -7,8 +7,8 @@ class ListMLE(BaseLoss):
 	ListMLE: Fen Xia, Tie-Yan Liu, Jue Wang, Wensheng Zhang, and Hang Li. 2008. Listwise Approach to Learning to Rank: Theory and Algorithm.
 	In Proceedings of the 25th ICML. 1192–1199.
 	"""
-	def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, s_neg=False):
-		super().__init__(n_pos, n_neg, neg_sampler, s_neg)
+	def __init__(self, n_pos=10, n_neg=50, neg_sampler=None):
+		super().__init__(n_pos, n_neg, neg_sampler)
 
 	def forward(self, gt, t_score, s_score):
 		"""

@@ -98,7 +98,22 @@ def train_one_epoch(
         else:
             cls_loss = F.cross_entropy(s_logits, answer_id)
 
-        loss = cls_loss + args.alpha * rank_loss
+        if args.warmup_alpha:
+            curr_step = epoch * len(data_loader) + i_batch
+            num_warmup_steps = round(args.fraction_warmup_steps * num_training_steps)
+            if curr_step < num_warmup_steps:
+                gamma = float(curr_step) / float(max(1, num_warmup_steps))
+            else:
+                gamma = max(
+                    0.0,
+                    float(num_training_steps - curr_step)
+                    / float(max(1, num_training_steps - num_warmup_steps)),
+                )
+            alpha = args.alpha * gamma
+        else:
+            alpha = args.alpha
+
+        loss = cls_loss + alpha * rank_loss
         loss_dict = {"loss": loss, "cls_loss": cls_loss, "rank_loss": rank_loss, "ndcg": ndcg}
 
         # reduce losses over all GPUs for logging purposes
@@ -181,6 +196,11 @@ def evaluate(
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
+        types = batch_dict["type"]
+        if "sub" in batch_dict:
+            subs = batch_dict["sub"]
+        else:
+            subs = [0] * len(types)
         if dataset_name == "ivqa":
             answer_id = (answer_id / 2).clamp(max=1)
             answer_id_expanded = answer_id.to(device)

@@ -8,8 +8,8 @@ class LambdaRank(BaseLoss):
     """
     Learning to Rank with Nonsmooth Cost Functions. NIPS. 2006.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, s_neg=False, sigma=1):
-        super().__init__(n_pos, n_neg, neg_sampler, s_neg)
+    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, sigma=1):
+        super().__init__(n_pos, n_neg, neg_sampler)
         self.sigma = sigma
         self.sigma_t = 0.1
 
@@ -37,15 +37,6 @@ class LambdaRank(BaseLoss):
         G = (2 ** score - 1) / idcg  # normalised gains
         return torch.abs(pair_minus(G) * pair_minus(D))
 
-    def delta_ndcg_1(self, score):
-        label = torch.zeros(score.size(1), device=score.device)
-        label[:self.n_pos] = torch.arange(1, self.n_pos + 1).clamp(max=50).flip(0)
-        label = label.expand(score.size())
-        D = (1 / torch.log2(torch.arange(2, score.size(1) + 2, device=score.device))).unsqueeze(0)  # discounts
-        idcg = torch.sum((2 ** label - 1) * D, dim=1, keepdim=True)   # ideal dcg
-        G = (2 ** label - 1) / idcg  # normalised gains
-        return torch.abs(pair_minus(G) * pair_minus(D))
-
 
 # if __name__ == '__main__':
 #     import torch.optim as optim
@@ -55,7 +46,7 @@ class LambdaRank(BaseLoss):
 #     pred = torch.rand(2, N) * 100
 #     pred.requires_grad = True
 #     ori = pred.clone()
-#     kd_loss = LambdaRank(n_pos=3, n_neg=3, neg_sampler='zipfs', s_neg=True, sigma=1.)
+#     kd_loss = LambdaRank(n_pos=3, n_neg=3, neg_sampler='zipfs', sigma=1.)
 #     optimizer = optim.Adam([pred], lr=0.01)
 #     for epoch in range(10000):
 #         optimizer.zero_grad()

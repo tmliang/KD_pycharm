@@ -8,8 +8,8 @@ class MarginRank(BaseLoss):
     """
     LED: Lexicon-Enlightened Dense Retriever for Large-Scale Retrieval. WWW. 2023
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, s_neg=False, margin=0):
-        super().__init__(n_pos, n_neg, neg_sampler, s_neg)
+    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, margin=0):
+        super().__init__(n_pos, n_neg, neg_sampler)
         self.margin = margin
         self.margin_ranking_loss = nn.MarginRankingLoss(margin=margin, reduction='mean')
 

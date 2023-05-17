@@ -7,8 +7,8 @@ class RRD(BaseLoss):
     SeongKu Kang, Junyoung Hwang, Wonbin Kweon and Hwanjo Yu. 2020.
     DE-RRD: A Knowledge Distillation Framework for Recommender System. In Proceedings of the CIKM.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, s_neg=False, temperature=1):
-        super().__init__(n_pos, n_neg, neg_sampler, s_neg)
+    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, temperature=1):
+        super().__init__(n_pos, n_neg, neg_sampler)
         self.temperature = temperature
 
     def forward(self, gt, t_score, s_score):

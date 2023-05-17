@@ -8,8 +8,8 @@ class ListNet(BaseLoss):
     Zhe Cao, Tao Qin, Tie-Yan Liu, Ming-Feng Tsai, and Hang Li. 2007.
     Learning to Rank: From Pairwise Approach to Listwise Approach. In Proceedings of the 24th ICML. 129–136.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler='prob', s_neg=False, temperature=1):
-        super().__init__(n_pos, n_neg, neg_sampler, s_neg)
+    def __init__(self, n_pos=10, n_neg=50, neg_sampler='prob', temperature=1):
+        super().__init__(n_pos, n_neg, neg_sampler)
         self.temperature = temperature
 
     def forward(self, gt, t_score, s_score):

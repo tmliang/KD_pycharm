@@ -7,7 +7,7 @@
       <paths name="28">
         <serverdata>
           <mappings>
-            <mapping deploy="/KD" local="$PROJECT_DIR$" web="/" />
+            <mapping local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>

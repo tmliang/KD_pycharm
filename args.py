@@ -199,7 +199,12 @@ def get_args_parser():
 
     # Training hyper-parameters
     parser.add_argument("--lr", default=5e-5, type=float, help="learning rate")
-    parser.add_argument("--alpha", default=1., type=float, help="weight of ranking loss")
+    parser.add_argument(
+        "--beta1", default=0.9, type=float, help="Adam optimizer parameter"
+    )
+    parser.add_argument(
+        "--beta2", default=0.95, type=float, help="Adam optimizer parameter"
+    )
     parser.add_argument(
         "--batch_size", default=32, type=int, help="batch size used for training"
     )
@@ -292,14 +297,9 @@ def get_args_parser():
         help="path to load checkpoint",
     )
     parser.add_argument(
-        "--gload",
+        "--teacher_load",
         default="",
-        help="path to load G checkpoint",
-    )
-    parser.add_argument(
-        "--dload",
-        default="",
-        help="path to load D checkpoint",
+        help="path to load checkpoint",
     )
     parser.add_argument(
         "--resume",
@@ -394,14 +394,15 @@ def get_args_parser():
         "--loss",
         type=str,
         default='listnet',
-        choices=["logit", "listnet", "stlistnet", "listmle", "lambda", "lambdarank", "margin_mse", "margin_rank", "ranknet"],
+        choices=["logit", "dkd", "listnet", "stlistnet", "listmle", "lambda", "lambdarank", "margin_mse", "margin_rank",
+                 "ranknet", "stdkd", "tridkd"],
         help="kd loss functions"
     )
     parser.add_argument(
         "--lambda_weight",
         type=str,
         default='ranknet',
-        choices=["ranknet", "lambdarank", "ndcg1", "ndcg2", "ndcg2++"],
+        choices=["ndcg1", "ndcg2", "ndcg2++"],
         help="weight scheme in lambda losses"
     )
     parser.add_argument(
@@ -429,16 +430,10 @@ def get_args_parser():
         help="temperature in some losses",
     )
     parser.add_argument(
-        "--topk",
-        type=int,
-        default=1,
-        help="retrieval number at training",
+        "--warmup_alpha",
+        action="store_true"
     )
-    parser.add_argument(
-        "--topk_val",
-        type=int,
-        default=10,
-        help="retrieval number at inference",
-    )
-    parser.add_argument("--rtd_lambda", default=50., type=float, help="weight of D loss")
+    parser.add_argument("--alpha", default=1., type=float, help="weight of ranking loss")
+    parser.add_argument("--dkd_alpha", default=5., type=float)
+    parser.add_argument("--dkd_beta", default=1., type=float)
     return parser

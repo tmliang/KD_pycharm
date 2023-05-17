@@ -49,22 +49,18 @@ class BaseLoss(nn.Module):
     This is the base model to construct the target ranking list in order to compute kd_loss with different methods.
     """
 
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler='random', s_neg=False):
+    def __init__(self, n_pos=10, n_neg=50, neg_sampler='random'):
         super().__init__()
         self.n_pos = n_pos
-        self.s_neg = s_neg
         self.Sampler = Sampler(n_neg, actor=neg_sampler)
 
     def sort_scores_by_teacher(self, gt, t_score, s_score):
         if len(gt.shape) == 1:
             sorted_ind = torch.sort(t_score, descending=True).indices
             pos_list = sorted_ind[:, :self.n_pos]
-            if self.s_neg:
-                s_score_for_neg = s_score.scatter(1, torch.cat([pos_list, gt.unsqueeze(1)], 1), float('-inf'))
-                sorted_ind_for_neg = torch.sort(s_score_for_neg, descending=True).indices
-                neg_list = self.Sampler(sorted_ind_for_neg)
-            else:
-                neg_list = self.Sampler(sorted_ind[:, self.n_pos:])
+            # random positive sample
+
+            neg_list = self.Sampler(sorted_ind[:, self.n_pos:])
         else:
             pass
             # 从dataloader处理，保证每个batch中的num_gt一致
@@ -77,11 +73,6 @@ class BaseLoss(nn.Module):
         t_score = t_score.gather(1, ind)
         s_score = s_score.gather(1, ind)
         return t_score, s_score
-
-    # def place_gt_top(self, gt, score):
-    #     gt_score = (score.max(1).values + 1).unsqueeze(1)
-    #     score = score.scatter(1, gt.unsqueeze(1), gt_score)
-    #     return score
 
     def forward(self, gt, t_score, s_score):
         """
