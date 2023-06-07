@@ -106,17 +106,22 @@ class VideoQA_Dataset(Dataset):
         else:
             video = self.features[video_id].float()
         if len(video) > self.max_feats:
-            ind = th.randperm(len(video))[:self.max_feats].sort().values
+            sampled = []
+            for j in range(self.max_feats):
+                sampled.append(video[(j * len(video)) // self.max_feats])
+            video0 = th.stack(sampled)
+            video1 = video[th.randperm(len(video))[:self.max_feats].sort().values]
             video_len = self.max_feats
-            aug_video = video[ind]
         elif len(video) < self.max_feats:
             video_len = len(video)
-            aug_video = th.zeros(self.max_feats, self.features_dim)
-            ind = th.randperm(self.max_feats)[:video_len].sort().values
-            aug_video[ind] = video
+            video0 = th.zeros(self.max_feats, self.features_dim)
+            video0[th.randperm(self.max_feats)[:video_len].sort().values] = video
+            video1 = th.cat([video, th.zeros(self.max_feats - video_len, self.features_dim)], 0)
         else:
             video_len = self.max_feats
-            aug_video = video
+            video0, video1 = video, video
+
+        aug_video = (video0, video1)
         return aug_video, video_len
 
     def __getitem__(self, idx):
@@ -185,9 +190,14 @@ class VideoQA_Dataset(Dataset):
         }
 
 
-def videoqa_collate_fn(batch):
+def aug_videoqa_collate_fn(batch):
     bs = len(batch)
-    video = th.stack([batch[i]["video"] for i in range(bs)])
+    if isinstance(batch[0]["video"], tuple):
+        video0 = th.stack([batch[i]["video"][0] for i in range(bs)])
+        video1 = th.stack([batch[i]["video"][1] for i in range(bs)])
+        video = (video0, video1)
+    else:
+        video = th.stack([batch[i]["video"] for i in range(bs)])
     video_len = th.tensor([batch[i]["video_len"] for i in range(bs)], dtype=th.long)
     text = (
         [batch[i]["text"] for i in range(bs)]
@@ -216,7 +226,7 @@ def videoqa_collate_fn(batch):
     return out
 
 
-def build_videoqa_dataset(dataset_name, split, args, tokenizer):
+def build_aug_videoqa_dataset(dataset_name, split, args, tokenizer):
     if dataset_name == "msvd":
         if split == "train":
             csv_path = args.msvd_train_csv_path

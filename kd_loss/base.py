@@ -1,6 +1,8 @@
 import random
 import torch
 import torch.nn as nn
+from .listwise import ListNet, STListNet, ListMLE, LambdaLoss, LambdaRank
+from .pairwise import MarginRank, MarginMSE, RankNet
 
 
 class Sampler(nn.Module):
@@ -44,15 +46,16 @@ class Sampler(nn.Module):
         return samples.gather(1, ind)
 
 
-class BaseLoss(nn.Module):
+class RankingLoss(nn.Module):
     """
-    This is the base model to construct the target ranking list in order to compute kd_loss with different methods.
+    This is the base model to construct the target ranking list in order to compute different ranking losses.
     """
 
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler='random'):
+    def __init__(self, args):
         super().__init__()
-        self.n_pos = n_pos
-        self.Sampler = Sampler(n_neg, actor=neg_sampler)
+        self.n_pos = args.n_pos
+        self.Sampler = Sampler(args.n_neg, actor=args.neg_sampler)
+        self.loss = self.ranking_loss(args)
 
     def sort_scores_by_teacher(self, gt, t_score, s_score):
         if len(gt.shape) == 1:
@@ -81,4 +84,26 @@ class BaseLoss(nn.Module):
         :param s_score: student predictions
         :return: kd_loss value, a torch.Tensor
         """
-        pass
+        t_score, s_score = self.sort_scores_by_teacher(gt, t_score, s_score)
+        return self.loss(t_score, s_score)
+
+    def ranking_loss(self, args):
+        loss_func = args.loss1
+        if loss_func == 'listnet':
+            return ListNet(args.temperature)
+        elif loss_func == 'stlistnet':
+            return STListNet(args.temperature)
+        elif loss_func == 'listmle':
+            return ListMLE()
+        elif loss_func == 'lambda':
+            return LambdaLoss(args.lambda_weight, args.sigma, args.temperature)
+        elif loss_func == 'lambdarank':
+            return LambdaRank(args.sigma, args.temperature)
+        elif loss_func == 'margin_mse':
+            return MarginMSE(args.margin)
+        elif loss_func == 'margin_rank':
+            return MarginRank(args.n_pos, args.margin)
+        elif loss_func == 'ranknet':
+            return RankNet(args.sigma)
+        else:
+            raise NotImplementedError

@@ -1,24 +1,23 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from kd_loss.utils import pair_minus
-from kd_loss.base import BaseLoss
 
 
-class LambdaRank(BaseLoss):
+class LambdaRank(nn.Module):
     """
     Learning to Rank with Nonsmooth Cost Functions. NIPS. 2006.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, sigma=1):
-        super().__init__(n_pos, n_neg, neg_sampler)
+    def __init__(self, sigma=1, temperature=1):
+        super().__init__()
         self.sigma = sigma
-        self.sigma_t = 0.1
+        self.temperature = temperature
 
-    def forward(self, gt, t_score, s_score):
-        t_score, s_score = self.sort_scores_by_teacher(gt, t_score, s_score)
+    def forward(self, score, tgt_score):
 
         # get pairwise differences
-        t_diff = pair_minus(t_score)
-        s_diff = pair_minus(s_score)
+        t_diff = pair_minus(tgt_score)
+        s_diff = pair_minus(score)
 
         # only compute when i<j and i<n_pos
         mask = torch.zeros_like(t_diff[0], dtype=torch.bool)
@@ -27,7 +26,7 @@ class LambdaRank(BaseLoss):
 
         score = torch.sigmoid(self.sigma * s_diff).masked_fill(~mask, 0)
         target = ((t_diff.sign() + 1) / 2).masked_fill(~mask, 0)
-        delta = self.delta_ndcg(t_score * self.sigma_t).masked_fill(~mask, 0)
+        delta = self.delta_ndcg(tgt_score * self.temperature).masked_fill(~mask, 0)
 
         return F.binary_cross_entropy(input=score, target=target, weight=delta, reduction='sum') / score.size(0)
 

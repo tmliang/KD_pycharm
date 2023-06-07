@@ -1370,9 +1370,10 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
             sum_tokens.clamp(min=1),
         )  # n_ans
         a2b = self.lm_predictions.lm_head.bias[a2tok]
-        self.answer_bias.weight = torch.div(
-            (a2b * (a2tok != pad_token_id).float()).sum(1), sum_tokens.clamp(min=1)
+        self.answer_bias.data = torch.div(
+            (a2b * (a2tok != pad_token_id).float()).sum(1), sum_tokens.clamp(min=1).squeeze()
         )
+
         if freeze_last:
             self.answer_embeddings.requires_grad_(False)
             self.answer_bias.requires_grad_(False)
@@ -1494,7 +1495,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
         return MaskedLMOutput(
             loss=masked_lm_loss,
             logits=prediction_scores,
-            hidden_states=outputs.hidden_states,
+            hidden_states=modified[-1],
             attentions=outputs.attentions,
         )
 

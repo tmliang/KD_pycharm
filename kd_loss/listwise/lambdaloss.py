@@ -1,27 +1,26 @@
 import torch
+import torch.nn as nn
 from kd_loss.utils import pair_minus
-from kd_loss.base import BaseLoss
 
 
-class LambdaLoss(BaseLoss):
+class LambdaLoss(nn.Module):
     """
     Wang, Xuanhui and Li, Cheng and Golbandi, Nadav and Bendersky, Michael and Najork, Marc. 2018.
     The LambdaLoss Framework for Ranking Metric Optimization. ICIKM. 1313–1322.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, weight_scheme='ndcg1', sigma=1., mu=1.):
-        super().__init__(n_pos, n_neg, neg_sampler)
+    def __init__(self, weight_scheme='ndcg1', sigma=1, temperature=1):
+        super().__init__()
         self.weight_scheme = weight_scheme
         self.sigma = sigma
-        self.mu = mu
+        self.temperature = temperature
 
-    def forward(self, gt, t_score, s_score):
-        y, s = self.sort_scores_by_teacher(gt, t_score, s_score)
-        # y = self.quantize(y.gather(1, ind), rounding=True)
-        # s = self.quantize(s.gather(1, ind), rounding=False)
+    def forward(self, score, tgt_score):
+        # tgt_score = self.quantize(tgt_score.gather(1, ind), rounding=True)
+        # score = self.quantize(score.gather(1, ind), rounding=False)
 
-        D = (1 / torch.log2(torch.arange(2, y.size(1) + 2, device=y.device))).unsqueeze(0)  # inverse discounts
-        idcg = torch.sum((2 ** y - 1) * D, dim=1, keepdim=True)   # ideal dcg
-        G = (2 ** y - 1) / idcg  # normalised gains
+        D = (1 / torch.log2(torch.arange(2, tgt_score.size(1) + 2, device=tgt_score.device))).unsqueeze(0)  # inverse discounts
+        idcg = torch.sum((2 ** tgt_score - 1) * D, dim=1, keepdim=True)   # ideal dcg
+        G = (2 ** tgt_score - 1) / idcg  # normalised gains
 
         # Weight scheme
         if self.weight_scheme == 'ndcg1':
@@ -34,7 +33,7 @@ class LambdaLoss(BaseLoss):
             raise NotImplementedError
 
         # lambda
-        lam = (torch.sigmoid(self.sigma * pair_minus(s)) ** weight).clamp(min=1e-10)
+        lam = (torch.sigmoid(self.sigma * pair_minus(score)) ** weight).clamp(min=1e-10)
         loss = torch.log(lam)
         # mask
         mask = torch.ones_like(lam[0], dtype=torch.bool)
@@ -53,7 +52,7 @@ class LambdaLoss(BaseLoss):
         return delta * torch.abs(pair_minus(G))
 
     def ndcgloss2pp(self, G, D):
-        return (self.mu * self.ndcgloss2(G, D) + torch.abs(pair_minus(D))) * torch.abs(pair_minus(G))
+        return (self.temperature * self.ndcgloss2(G, D) + torch.abs(pair_minus(D))) * torch.abs(pair_minus(G))
 
     def quantize(self, score, low=0, high=16, rounding=False):
         # Quantization -> [low, high]
@@ -76,7 +75,7 @@ if __name__ == '__main__':
     pred = torch.rand(2, N)
     pred.requires_grad = True
     ori = pred.clone()
-    kd_loss = LambdaLoss(n_pos=3, n_neg=3, weight_scheme='ndcg2++', sigma=1., mu=1.)
+    kd_loss = LambdaLoss(n_pos=3, n_neg=3, weight_scheme='ndcg2++', sigma=1., temperature=1.)
     optimizer = optim.Adam([pred], lr=0.01)
     for epoch in range(10000):
         optimizer.zero_grad()

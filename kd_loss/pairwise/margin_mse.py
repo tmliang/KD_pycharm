@@ -1,24 +1,22 @@
 import torch
 import torch.nn as nn
 from kd_loss.utils import pair_minus
-from kd_loss.base import BaseLoss
 
 
-class MarginMSE(BaseLoss):
+class MarginMSE(nn.Module):
     """
     Improving Efficient Neural Ranking Models with Cross-Architecture Knowledge Distillation. 2020.
     https://arxiv.org/abs/2010.02666.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, margin=0):
-        super().__init__(n_pos, n_neg, neg_sampler)
+    def __init__(self, margin=0):
+        super().__init__()
         self.margin = margin
         self.mse_loss = nn.MSELoss(reduction='mean')
 
-    def forward(self, gt, t_score, s_score):
-        t_score, s_score = self.sort_scores_by_teacher(gt, t_score, s_score)
+    def forward(self, score, tgt_score):
         # get pairwise differences
-        t_diff = pair_minus(t_score)
-        s_diff = pair_minus(s_score)
+        t_diff = pair_minus(tgt_score)
+        s_diff = pair_minus(score)
         # ignore the neg-neg pairs
         mask = torch.zeros_like(t_diff[0], dtype=torch.bool)
         mask[:self.n_pos] = 1

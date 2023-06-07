@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .base import Sampler
+from kd_loss.base import Sampler
 eps = 1e-20
 
 

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .base import Sampler
+from kd_loss.base import Sampler
 eps = 1e-20
 
 
@@ -28,20 +28,11 @@ class STDecoupled_KD(nn.Module):
         s_tgt = self.cat_target(s_pred, gt_mask)
         tckd = -torch.sum(t_tgt * s_tgt.log(), dim=1).mean()
 
-        # positive
-        sorted_ind = torch.sort(t_score.masked_fill(gt_mask, float('-inf')), descending=True).indices
-        pos_list = sorted_ind[:, :self.n_pos]
-        t_pos = t_score.gather(1, pos_list)
-        s_pos = s_score.gather(1, pos_list)
-        pckd = -torch.sum(t_pos.softmax(dim=1) * s_pos.log_softmax(dim=1), dim=1).mean()
-
         # negative
-        n_gt = 1 if len(gt.size()) == 1 else gt.size(1)
-        neg_list = self.Sampler(sorted_ind[:, self.n_pos:-n_gt])
-        t_neg = t_score.gather(1, neg_list)
-        s_neg = s_score.gather(1, neg_list)
-        nckd = -torch.sum(t_neg.softmax(dim=1) * s_neg.log_softmax(dim=1), dim=1).mean()
-        return tckd + self.alpha * pckd + self.beta * nckd
+        nckd = -torch.sum(torch.softmax(t_score.masked_fill(gt_mask, -1000), dim=1) * torch.log_softmax(
+            s_score.masked_fill(gt_mask, -1000), dim=1), dim=1).mean()
+        return self.alpha * tckd + self.beta * nckd
+
 
     def cat_target(self, score, mask):
         pt = (score * mask).sum(1, keepdims=True)

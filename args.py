@@ -25,30 +25,6 @@ def get_args_parser():
         required=True,
     )
     parser.add_argument(
-        "--lsmdc_features_path",
-        default=os.path.join(DATA_DIR, name2folder["lsmdc"], "clipvitl14.pth"),
-    )
-    parser.add_argument(
-        "--lsmdc_train_csv_path",
-        default=os.path.join(DATA_DIR, name2folder["lsmdc"], "training.csv"),
-    )
-    parser.add_argument(
-        "--lsmdc_val_csv_path",
-        default=os.path.join(DATA_DIR, name2folder["lsmdc"], "val.csv"),
-    )
-    parser.add_argument(
-        "--lsmdc_test_csv_path",
-        default=os.path.join(DATA_DIR, name2folder["lsmdc"], "test.csv"),
-    )
-    parser.add_argument(
-        "--lsmdc_vocab_path",
-        default=os.path.join(DATA_DIR, name2folder["lsmdc"], "vocab.json"),
-    )
-    parser.add_argument(
-        "--lsmdc_subtitles_path",
-        default=os.path.join(DATA_DIR, name2folder["lsmdc"], "subtitles.pkl"),
-    )
-    parser.add_argument(
         "--ivqa_features_path",
         default=os.path.join(DATA_DIR, name2folder["ivqa"], "clipvitl14.pth"),
     )
@@ -159,42 +135,6 @@ def get_args_parser():
     parser.add_argument(
         "--tgif_vocab_path",
         default=os.path.join(DATA_DIR, name2folder["tgif"], "vocab.json"),
-    )
-    parser.add_argument(
-        "--how2qa_features_path",
-        default=os.path.join(DATA_DIR, name2folder["how2qa"], "clipvitl14_split.pth"),
-    )
-    parser.add_argument(
-        "--how2qa_train_csv_path",
-        default=os.path.join(DATA_DIR, name2folder["how2qa"], "train.csv"),
-    )
-    parser.add_argument(
-        "--how2qa_val_csv_path",
-        default=os.path.join(DATA_DIR, name2folder["how2qa"], "public_val.csv"),
-    )
-    parser.add_argument(
-        "--how2qa_subtitles_path",
-        default=os.path.join(DATA_DIR, name2folder["how2qa"], "subtitles.pkl"),
-    )
-    parser.add_argument(
-        "--tvqa_features_path",
-        default=os.path.join(DATA_DIR, name2folder["tvqa"], "clipvitl14.pth"),
-    )
-    parser.add_argument(
-        "--tvqa_train_csv_path",
-        default=os.path.join(DATA_DIR, name2folder["tvqa"], "train.csv"),
-    )
-    parser.add_argument(
-        "--tvqa_val_csv_path",
-        default=os.path.join(DATA_DIR, name2folder["tvqa"], "val.csv"),
-    )
-    parser.add_argument(
-        "--tvqa_test_csv_path",
-        default=os.path.join(DATA_DIR, name2folder["tvqa"], "test_public.csv"),
-    )
-    parser.add_argument(
-        "--tvqa_subtitles_path",
-        default=os.path.join(DATA_DIR, name2folder["tvqa"], "subtitles.pkl"),
     )
 
     # Training hyper-parameters
@@ -391,12 +331,25 @@ def get_args_parser():
         help="negatively sampling methods, None indicates use all negative labels"
     )
     parser.add_argument(
-        "--loss",
+        "--loss1",
         type=str,
         default='listnet',
-        choices=["logit", "dkd", "listnet", "stlistnet", "listmle", "lambda", "lambdarank", "margin_mse", "margin_rank",
-                 "ranknet", "stdkd", "tridkd"],
-        help="kd loss functions"
+        choices=["vanilla",
+                 "dkd", "stdkd", "tridkd",
+                 "listnet", "stlistnet", "listmle", "lambda", "lambdarank", "margin_mse", "margin_rank", "ranknet"
+                 ]
+    )
+    parser.add_argument(
+        "--loss2",
+        type=str,
+        default='r2kd',
+        choices=["rkd", "r2kd"]
+    )
+    parser.add_argument(
+        "--dist_func",
+        type=str,
+        default='mse',
+        choices=["mse", "cos", "norm"]
     )
     parser.add_argument(
         "--lambda_weight",
@@ -408,8 +361,7 @@ def get_args_parser():
     parser.add_argument(
         "--sigma",
         type=float,
-        default=1.,
-        help="sigma in losses",
+        default=1.
     )
     parser.add_argument(
         "--margin",
@@ -418,22 +370,19 @@ def get_args_parser():
         help="margin in margin-mse and margin-rank losses",
     )
     parser.add_argument(
-        "--mu",
-        type=float,
-        default=5.,
-        help="mu in ndcgloss2++ of lambda loss",
-    )
-    parser.add_argument(
         "--temperature",
         type=float,
-        default=1.,
-        help="temperature in some losses",
+        default=1.
     )
     parser.add_argument(
         "--warmup_alpha",
         action="store_true"
     )
-    parser.add_argument("--alpha", default=1., type=float, help="weight of ranking loss")
-    parser.add_argument("--dkd_alpha", default=5., type=float)
-    parser.add_argument("--dkd_beta", default=1., type=float)
+    parser.add_argument(
+        "--project",
+        action="store_true"
+    )
+    parser.add_argument("--alpha0", default=1., type=float)
+    parser.add_argument("--alpha1", default=1., type=float)
+    parser.add_argument("--alpha2", default=0.1, type=float)
     return parser

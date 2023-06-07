@@ -1,22 +1,20 @@
 import torch
-from kd_loss.base import BaseLoss
+import torch.nn as nn
 
 
-class ListMLE(BaseLoss):
+class ListMLE(nn.Module):
 	"""
-	ListMLE: Fen Xia, Tie-Yan Liu, Jue Wang, Wensheng Zhang, and Hang Li. 2008. Listwise Approach to Learning to Rank: Theory and Algorithm.
-	In Proceedings of the 25th ICML. 1192–1199.
+	Listwise Approach to Learning to Rank: Theory and Algorithm. ICML 2008.
 	"""
-	def __init__(self, n_pos=10, n_neg=50, neg_sampler=None):
-		super().__init__(n_pos, n_neg, neg_sampler)
+	def __init__(self):
+		super().__init__()
 
-	def forward(self, gt, t_score, s_score):
+	def forward(self, score, tgt_score=None):
 		"""
 		ListMLE estimates the probability of the observed ranking and attempts to maximize it.
 		"""
-		t_score, s_score = self.sort_scores_by_teacher(gt, t_score, s_score)
-		s_score = s_score - s_score.max(dim=1, keepdim=True).values.detach()		# keep exp() stable
-		loss = torch.logcumsumexp(s_score.flip(1), dim=1).flip(1) - s_score
+		score = score - score.max(dim=1, keepdim=True).values.detach()		# keep exp() stable
+		loss = torch.logcumsumexp(score.flip(1), dim=1).flip(1) - score
 		return torch.mean(loss)
 
 

@@ -1,23 +1,20 @@
 import torch
-from kd_loss.base import BaseLoss
+import torch.nn as nn
 eps = 1e-20
 
 
-class STListNet(BaseLoss):
+class STListNet(nn.Module):
     """
-    Bruch, Sebastian and Han, Shuguang and Bendersky, Michael and Najork, Marc. 2020.
-    A Stochastic Treatment of Learning to Rank Scoring Functions. WSDM.
+    A Stochastic Treatment of Learning to Rank Scoring Functions. WSDM 2020.
     """
-    def __init__(self, n_pos=10, n_neg=50, neg_sampler=None, temperature=1):
-        super().__init__(n_pos, n_neg, neg_sampler)
+    def __init__(self, temperature=1):
+        super().__init__()
         self.temperature = temperature
 
-    def forward(self, gt, t_score, s_score):
-        t_score, s_score = self.sort_scores_by_teacher(gt, t_score, s_score)
-
+    def forward(self, score, tgt_score):
         # stochastic scores
-        unif = torch.rand(s_score.size(), device=s_score.device)
+        unif = torch.rand(score.size(), device=score.device)
         gumbel = -torch.log(-torch.log(unif + eps) + eps)  # Sample from gumbel distribution
-        s_score = (s_score + gumbel) / self.temperature
+        score = (score + gumbel) / self.temperature
 
-        return -torch.sum(t_score.softmax(dim=1) * s_score.log_softmax(dim=1), dim=1).mean()
+        return -torch.sum(tgt_score.softmax(dim=1) * score.log_softmax(dim=1), dim=1).mean()
