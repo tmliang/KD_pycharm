@@ -85,7 +85,7 @@ class RankingLoss(nn.Module):
         :return: kd_loss value, a torch.Tensor
         """
         t_score, s_score = self.sort_scores_by_teacher(gt, t_score, s_score)
-        return self.loss(t_score, s_score)
+        return self.loss(score=s_score, tgt_score=t_score)
 
     def ranking_loss(self, args):
         loss_func = args.loss1

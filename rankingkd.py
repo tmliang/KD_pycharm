@@ -93,11 +93,8 @@ def train_one_epoch(
 
         ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=10)
 
-        if args.alpha0 > 0:
-            dist_matrix = ct0(t_rep, s_rep)
-            loss0 = dist_matrix.diagonal().mean()
-        else:
-            loss0 = 0
+        dist_matrix = ct0(t_rep, s_rep)
+        loss0 = dist_matrix.diagonal().mean()
         loss1 = ct1(answer_id, t_logits, s_logits)
         loss2 = ct2(answer_id, t_logits, s_logits, dist_matrix) if args.alpha2 > 0 else 0
 
@@ -108,23 +105,25 @@ def train_one_epoch(
         else:
             cls_loss = F.cross_entropy(s_logits, answer_id)
 
-        # if args.warmup_alpha:
-        #     curr_step = epoch * len(data_loader) + i_batch
-        #     num_warmup_steps = round(args.fraction_warmup_steps * num_training_steps)
-        #     if curr_step < num_warmup_steps:
-        #         gamma = float(curr_step) / float(max(1, num_warmup_steps))
-        #     else:
-        #         gamma = max(
-        #             0.0,
-        #             float(num_training_steps - curr_step)
-        #             / float(max(1, num_training_steps - num_warmup_steps)),
-        #         )
-        #     alpha = args.alpha * gamma
-        # else:
-        #     alpha = args.alpha
+        if args.warmup_alpha:
+            curr_step = epoch * len(data_loader) + i_batch
+            num_warmup_steps = round(args.fraction_warmup_steps * num_training_steps)
+            if curr_step < num_warmup_steps:
+                gamma = float(curr_step) / float(max(1, num_warmup_steps))
+            else:
+                gamma = max(
+                    0.0,
+                    float(num_training_steps - curr_step)
+                    / float(max(1, num_training_steps - num_warmup_steps)),
+                )
+            alpha0 = args.alpha0 * gamma
+            alpha2 = args.alpha2 * gamma
+        else:
+            alpha0 = args.alpha0
+            alpha2 = args.alpha2
 
-        loss = cls_loss + args.alpha0 * loss0 + args.alpha1 * loss1 + args.alpha2 * loss2
-        loss_dict = {"loss": loss, "cls_loss": cls_loss, "loss1": loss1, "loss2": loss2, "ndcg": ndcg}
+        loss = cls_loss + alpha0 * loss0 + args.alpha1 * loss1 + alpha2 * loss2
+        loss_dict = {"loss": loss, "cls_loss": cls_loss, "loss0": loss0, "loss1": loss1, "loss2": loss2, "ndcg": ndcg}
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = dist.reduce_dict(loss_dict)
@@ -324,8 +323,13 @@ def main(args):
     if dist.is_main_process():
         print("number of params:", n_parameters)
 
+    # setting loss
+    ranking_loss = build_ranking_loss(args)
+
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
+    if args.project:
+        params_for_optimization += list(p for p in ranking_loss[0].projector.parameters())
     optimizer = torch.optim.Adam(
         params_for_optimization,
         lr=args.lr
@@ -350,9 +354,6 @@ def main(args):
         if args.resume and not args.eval:
             optimizer.load_state_dict(checkpoint["optimizer"])
             args.start_epoch = checkpoint["epoch"] + 1
-
-    # setting loss
-    ranking_loss = build_ranking_loss(args)
 
     aid2tokid = torch.zeros(len(dataloader_test.dataset.a2id), args.max_atokens).long()
     for a, aid in dataloader_test.dataset.a2id.items():

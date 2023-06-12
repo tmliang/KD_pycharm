@@ -99,26 +99,6 @@ class VideoQA_Dataset(Dataset):
             video_len = self.max_feats
         return video, video_len
 
-    def _get_train_video(self, video_id):
-        if video_id not in self.features:
-            print(video_id)
-            video = th.zeros(1, self.features_dim)
-        else:
-            video = self.features[video_id].float()
-        if len(video) > self.max_feats:
-            ind = th.randperm(len(video))[:self.max_feats].sort().values
-            video_len = self.max_feats
-            aug_video = video[ind]
-        elif len(video) < self.max_feats:
-            video_len = len(video)
-            aug_video = th.zeros(self.max_feats, self.features_dim)
-            ind = th.randperm(self.max_feats)[:video_len].sort().values
-            aug_video[ind] = video
-        else:
-            video_len = self.max_feats
-            aug_video = video
-        return aug_video, video_len
-
     def __getitem__(self, idx):
         # get question
         question = self.data["question"].values[idx].capitalize().strip()
@@ -168,10 +148,7 @@ class VideoQA_Dataset(Dataset):
         text = self._get_text(question, self.mask, sub)
 
         # get video
-        if self.train:
-            video, video_len = self._get_train_video(video_id)
-        else:
-            video, video_len = self._get_video(video_id)
+        video, video_len = self._get_video(video_id)
 
         return {
             "video": video,
