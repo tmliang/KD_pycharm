@@ -17,14 +17,11 @@ class FKD(nn.Module):
         if self.projector:
             s_rep = self.projector(s_rep)
         if self.dist_func == 'mse':
-            return torch.sum((t_rep.unsqueeze(1) - s_rep.unsqueeze(0))**2, dim=-1)
+            dis = F.mse_loss(t_rep, s_rep, reduction='none').sum(1) / t_rep.size(1)
         elif self.dist_func == 'norm':
-            return torch.norm(t_rep.unsqueeze(1) - s_rep.unsqueeze(0), dim=-1)
+            dis = torch.norm((t_rep-s_rep), dim=1)
         elif self.dist_func == 'cos':
-            return torch.cosine_similarity(t_rep.unsqueeze(1), s_rep.unsqueeze(0), dim=2)
+            dis = 1 - torch.cosine_similarity(t_rep, s_rep, dim=1)
         else:
             raise NotImplementedError
-
-        # diag = d.diag()
-        # non_diag = d.masked_select(~torch.eye(d.size(0), dtype=torch.bool))
-        # return diag, non_diag
+        return dis.mean(), dis

@@ -93,10 +93,9 @@ def train_one_epoch(
 
         ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=10)
 
-        dist_matrix = ct0(t_rep, s_rep)
-        loss0 = dist_matrix.diagonal().mean()
+        loss0, dis = ct0(t_rep, s_rep)
         loss1 = ct1(answer_id, t_logits, s_logits)
-        loss2 = ct2(answer_id, t_logits, s_logits, dist_matrix) if args.alpha2 > 0 else 0
+        loss2 = ct2(answer_id, t_logits, s_logits, dis) if args.alpha2 > 0 else 0
 
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)

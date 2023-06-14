@@ -382,6 +382,11 @@ def get_args_parser():
         "--project",
         action="store_true"
     )
+    parser.add_argument(
+        "--tail_step",
+        type=int,
+        default=10
+    )
     parser.add_argument("--alpha0", default=0, type=float)
     parser.add_argument("--alpha1", default=0, type=float)
     parser.add_argument("--alpha2", default=0, type=float)

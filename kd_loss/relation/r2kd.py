@@ -10,15 +10,18 @@ class R2KD(nn.Module):
         self.sigma = args.sigma
         self.margin_ranking_loss = nn.MarginRankingLoss(margin=args.margin, reduction='mean')
 
-    def forward(self, gt, t_logits, s_logits, dist_matrix):
-        d = -dist_matrix
-        d_flat = d.flatten()
-        x1 = d.diagonal().repeat_interleave(len(d_flat))
-        x2 = d_flat.repeat(len(d))
-
-        ins_lv = (t_logits.argmax(1) == gt).float() + 1
-        idx1 = ins_lv.repeat_interleave(len(d_flat))
-        idx2 = torch.diag_embed(ins_lv).flatten().repeat(len(d))
+    def forward(self, gt, t_logits, s_logits, dis):
+        d = -dis
+        n = d.size(0)
+        x1 = d.view(-1, 1).repeat(1, n)
+        x2 = d.view(1, -1).repeat(n, 1)
+        gt_rank = (t_logits.argsort(1) == gt.view(-1, 1)).float().argmax(1)
+        idx1 = gt_rank.view(-1, 1).repeat(1, n)
+        idx2 = gt_rank.view(1, -1).repeat(n, 1)
         y = idx1 - idx2
-        y[y > 0] = 1
-        return self.margin_ranking_loss(x1, x2, y)
+        tgt = y > 0
+        # y[tgt] = 1
+        if tgt.sum() > 0:
+            return self.margin_ranking_loss(x1[tgt], x2[tgt], y[tgt])
+        else:
+            return 0
