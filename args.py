@@ -158,12 +158,6 @@ def get_args_parser():
     parser.add_argument(
         "--epochs", default=10, type=int, help="number of training epochs"
     )
-    parser.add_argument(
-        "--lr_drop",
-        default=10,
-        type=int,
-        help="number of epochs after which the learning rate is reduced when not using linear decay",
-    )
     parser.add_argument("--optimizer", default="adam", type=str)
     parser.add_argument(
         "--clip_max_norm", default=0.1, type=float, help="gradient clipping max norm"
@@ -171,7 +165,7 @@ def get_args_parser():
     parser.add_argument(
         "--schedule",
         default="linear_with_warmup",
-        choices=["", "linear_with_warmup"],
+        choices=["", "linear_with_warmup", "cosine_annealing_with_warmup"],
         help="learning rate decay schedule, default is constant",
     )
     parser.add_argument(
@@ -331,6 +325,13 @@ def get_args_parser():
         help="negatively sampling methods, None indicates use all negative labels"
     )
     parser.add_argument(
+        "--lambda_weight",
+        type=str,
+        default='ranknet',
+        choices=["ndcg1", "ndcg2", "ndcg2++"],
+        help="weight scheme in lambda losses"
+    )
+    parser.add_argument(
         "--loss1",
         type=str,
         default='listnet',
@@ -350,13 +351,6 @@ def get_args_parser():
         type=str,
         default='mse',
         choices=["mse", "cos", "norm"]
-    )
-    parser.add_argument(
-        "--lambda_weight",
-        type=str,
-        default='ranknet',
-        choices=["ndcg1", "ndcg2", "ndcg2++"],
-        help="weight scheme in lambda losses"
     )
     parser.add_argument(
         "--sigma",
@@ -381,11 +375,6 @@ def get_args_parser():
     parser.add_argument(
         "--project",
         action="store_true"
-    )
-    parser.add_argument(
-        "--tail_step",
-        type=int,
-        default=10
     )
     parser.add_argument("--alpha0", default=0, type=float)
     parser.add_argument("--alpha1", default=0, type=float)
