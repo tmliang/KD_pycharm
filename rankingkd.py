@@ -203,11 +203,6 @@ def evaluate(
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
-        types = batch_dict["type"]
-        if "sub" in batch_dict:
-            subs = batch_dict["sub"]
-        else:
-            subs = [0] * len(types)
         if dataset_name == "ivqa":
             answer_id = (answer_id / 2).clamp(max=1)
             answer_id_expanded = answer_id.to(device)

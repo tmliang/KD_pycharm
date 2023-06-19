@@ -4,21 +4,26 @@ import torch.nn.functional as F
 import numpy as np
 import random
 import json
+import copy
 import math
 import sys
-from typing import Iterable
 import argparse
+import logging
 import time
 import datetime
 from util import dist
-from torch.utils.data import DataLoader, DistributedSampler
+from typing import Iterable
 from functools import reduce
+from torch.utils.data import DataLoader, DistributedSampler
 
 from datasets import build_videoqa_dataset, videoqa_collate_fn
 from model import build_model, get_tokenizer
 from args import get_args_parser
 from util.misc import get_mask, adjust_learning_rate
 from util.metrics import MetricLogger
+from metrics.eval_metrics import mean_average_precision
+
+logging.basicConfig(level=logging.ERROR)
 
 
 def train_one_epoch(
@@ -53,41 +58,36 @@ def train_one_epoch(
             return_tensors="pt",
         )
 
-        inputs = encoded["input_ids"].to(device)
-        attention_mask = encoded["attention_mask"].to(device)
+        text_ids = encoded["input_ids"].to(device)
+        text_mask = encoded["attention_mask"].to(device)
 
         # forward
         output = model(
             video=video,
             video_mask=video_mask,
-            input_ids=inputs,
-            attention_mask=attention_mask,
+            input_ids=text_ids,
+            attention_mask=text_mask
         )
+
         delay = args.max_feats if args.use_video else 0
-        logits = output["logits"][:, delay+1]
+        logits = output["logits"][:, :delay]  # (B, C)
         answer_id = batch_dict["answer_id"].to(device)
+
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
             nll = -F.log_softmax(logits, 1, _stacklevel=5)
             loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
-        elif dataset_name == "vqa":
-            a = (answer_id / 3).clamp(max=1)
-            nll = -F.log_softmax(logits, 1, _stacklevel=5)
-            loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
         else:
-            loss = F.cross_entropy(logits, answer_id)
+            ind = logits.detach().softmax(-1).argmax(1).gather(1, answer_id.unsqueeze(1)).squeeze()
+            loss = F.cross_entropy(
+                logits.gather(1, ind.reshape(-1, 1, 1).expand(-1, 1, logits.size(-1))).squeeze(),
+                answer_id
+            )
 
-        loss_dict = {"cls_loss": loss}
+        loss_dict = {"loss": loss}
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = dist.reduce_dict(loss_dict)
-        loss_reduced = sum(loss_dict_reduced.values())
-        loss_value = loss_reduced.item()
-
-        if not math.isfinite(loss_value):
-            print("Loss is {}, stopping training".format(loss_value))
-            print(loss_dict_reduced)
-            sys.exit(1)
 
         optimizer.zero_grad()
         loss.backward()
@@ -102,8 +102,7 @@ def train_one_epoch(
             args=args,
         )
 
-        metric_logger.update(loss=loss_value, **loss_dict_reduced)
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        metric_logger.update(**loss_dict_reduced)
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
@@ -120,7 +119,6 @@ def evaluate(
     args,
     thresholds=[1, 10],
     split="test",
-    type_map={0: "all"},
 ):
     model.eval()
     metric_logger = MetricLogger(delimiter="  ")
@@ -158,45 +156,37 @@ def evaluate(
             attention_mask=attention_mask,
         )
 
-        logits = output["logits"]
         delay = args.max_feats if args.use_video else 0
-        logits = logits[:, delay+1]
-        logits = logits.softmax(-1)
+        logits = output["logits"][:, :delay].softmax(-1).max(1).values
+        logits = logits.max(1).values
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
-        types = batch_dict["type"]
-        if "sub" in batch_dict:
-            subs = batch_dict["sub"]
-        else:
-            subs = [0] * len(types)
-        if dataset_name not in ["ivqa", "vqa"]:
-            answer_id_expanded = answer_id.view(-1, 1).expand_as(topk_aids).to(device)
-        elif dataset_name == "ivqa":
+        if dataset_name == "ivqa":
             answer_id = (answer_id / 2).clamp(max=1)
             answer_id_expanded = answer_id.to(device)
-        elif dataset_name == "vqa":
-            answer_id = (answer_id / 3).clamp(max=1)
-            answer_id_expanded = answer_id.to(device)
+        else:
+            answer_id_expanded = answer_id.view(-1, 1).expand_as(topk_aids).to(device)
+
+        maps = mean_average_precision(topk_aids, answer_id)
 
         agreeings = {}
         for x in thresholds:
-            if dataset_name not in ["ivqa", "vqa"]:
-                agreeings[x] = topk_aids[:, :x] == answer_id_expanded[:, :x]
-            else:
+            if dataset_name == "ivqa":
                 predicted = F.one_hot(
                     topk_aids[:, :x], num_classes=answer_id_expanded.shape[-1]
                 ).sum(1)
                 agreeings[x] = (predicted * answer_id_expanded).max(1)[0]
+            else:
+                agreeings[x] = topk_aids[:, :x] == answer_id_expanded[:, :x]
 
-        for i, (qid, gt, pred, type, sub) in enumerate(
-            zip(qids, answer_id, topk_aids, types, subs)
+        for i, (qid, gt, pred) in enumerate(
+            zip(qids, answer_id, topk_aids)
         ):
             res[qid] = {
                 "pred": pred.tolist(),
-                "gt": gt.tolist() if dataset_name in ["ivqa", "vqa"] else gt.item(),
-                "type": int(type),
-                "sub": sub,
+                "gt": gt.tolist() if dataset_name == "ivqa" else gt.item(),
+                "map": maps.item()
             }
             for x in thresholds:
                 res[qid][f"acc{x}"] = agreeings[x][i].sum().detach().cpu().item()
@@ -212,31 +202,13 @@ def evaluate(
     out = {}
     for x in thresholds:
         out[f"acc{x}"] = sum(results[qid][f"acc{x}"] for qid in results) / len(results)
-    if type_map is not None and len(type_map) > 1:
-        acc_type = {
-            type_map[i]: sum(
-                results[qid][f"acc1"] for qid in results if results[qid]["type"] == i
-            )
-            / len([x for x in results.values() if x["type"] == i])
-            for i in type_map
-        }
-    n_sub = len([x for x in results.values() if x["sub"]])
-    if n_sub:
-        acc_sub = (
-            sum(results[qid][f"acc1"] for qid in results if results[qid]["sub"]) / n_sub
-        )
+    out["map"] = sum(results[qid][f"map"] for qid in results) / len(results)
+
     if dist.is_main_process():
         print(dataset_name)
         for x in thresholds:
-            print(f"{split} acc{x}: {out[f'acc{x}']: .2%}")
-        if type_map is not None and len(type_map) > 1:
-            for x in acc_type:
-                print(f"acc {x}: {acc_type[x]: .2%}")
-            out.update(acc_type)
-        if n_sub:
-            print(f"acc sub: {acc_sub: .2%}; proportion {n_sub / len(results): .2%}")
-            out["acc_sub"] = acc_sub
-
+            print(f"acc{x}: {out[f'acc{x}']: .2%}")
+        print(f"map@10: {out['map']: .2%}")
     return results, out
 
 
@@ -257,7 +229,7 @@ def main(args):
     np.random.seed(seed)
     random.seed(seed)
 
-    # Build model
+    # Build dataset
     tokenizer = get_tokenizer(args)
     
     dataset_test = build_videoqa_dataset(
@@ -304,18 +276,18 @@ def main(args):
     if dist.is_main_process():
         print("number of params:", n_parameters)
 
+
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
     optimizer = torch.optim.Adam(
         params_for_optimization,
-        lr=args.lr,
-        betas=(args.beta1, args.beta2),
+        lr=args.lr
     )
 
-    # Load pretrained checkpoint
+    # load model
     if args.load:
         if dist.is_main_process():
-            print("loading from", args.load)
+            print("loading model from", args.load)
         checkpoint = torch.load(args.load, map_location="cpu")
         model.load_state_dict(checkpoint["model"], strict=False)
         if args.resume and not args.eval:
@@ -372,8 +344,7 @@ def main(args):
                     device=device,
                     dataset_name=args.dataset,
                     args=args,
-                    split="val",
-                    type_map=dataloader_test.dataset.type_map,
+                    split="val"
                 )
                 val_stats.update(
                     {args.dataset + "_" + k: v for k, v in out.items()}
@@ -388,7 +359,10 @@ def main(args):
                         )
                         dist.save_on_master(
                             {
-                                "model": model.state_dict()
+                                "model": model.state_dict(),
+                                "optimizer": optimizer.state_dict(),
+                                "epoch": epoch,
+                                "args": args,
                             },
                             checkpoint_path,
                         )
@@ -443,7 +417,8 @@ def main(args):
         if dist.is_main_process() and args.save_dir:
             print(f"loading best checkpoint from epoch {best_epoch}")
         if args.save_dir:
-            torch.distributed.barrier()  # wait all processes
+            if args.distributed:
+                torch.distributed.barrier()  # wait all processes
             checkpoint = torch.load(
                 os.path.join(args.save_dir, f"best_model.pth"),
                 map_location="cpu",
@@ -457,8 +432,7 @@ def main(args):
         device=device,
         dataset_name=args.dataset,
         args=args,
-        split="test",
-        type_map=dataloader_test.dataset.type_map,
+        split="test"
     )
 
     if args.save_dir and dist.is_main_process():
