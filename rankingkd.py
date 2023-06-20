@@ -5,8 +5,6 @@ import numpy as np
 import random
 import json
 import copy
-import math
-import sys
 import argparse
 import logging
 import time
@@ -196,18 +194,13 @@ def evaluate(
 
         logits = output["logits"]
         delay = args.max_feats if args.use_video else 0
-        logits = logits[:, delay : encoded["input_ids"].size(1) + delay][
+        logits = logits[:, delay: encoded["input_ids"].size(1) + delay][
             encoded["input_ids"] == tokenizer.mask_token_id
         ]  # get the prediction on the mask token
         logits = logits.softmax(-1)
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
-        types = batch_dict["type"]
-        if "sub" in batch_dict:
-            subs = batch_dict["sub"]
-        else:
-            subs = [0] * len(types)
         if dataset_name == "ivqa":
             answer_id = (answer_id / 2).clamp(max=1)
             answer_id_expanded = answer_id.to(device)

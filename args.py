@@ -201,7 +201,22 @@ def get_args_parser():
         help="downsampling factor for adapter ff",
     )
     parser.add_argument(
+        "--n_prompt",
+        type=int,
+        default=0,
+        help="number of prompt tokens",
+    )
+    parser.add_argument(
+        "--use_type",
+        action="store_true"
+    )
+    parser.add_argument(
         "--dropout", default=0.1, type=float, help="dropout to use in the adapter"
+    )
+    parser.add_argument(
+        "--ft_type",
+        action="store_true",
+        help="whether to finetune type embedding module or not",
     )
     parser.add_argument(
         "--ft_last",

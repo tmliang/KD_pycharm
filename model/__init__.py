@@ -15,6 +15,9 @@ def build_model(args):
         dropout=args.dropout,
         n_ans=args.n_ans,
         freeze_last=args.freeze_last,
+        ft_type=args.ft_type,
+        n_prompt=args.n_prompt,
+        use_type=args.use_type,
         pretrained_model_name_or_path=model_name,
         local_files_only=True,
     )

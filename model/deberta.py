@@ -989,6 +989,9 @@ class DebertaV2Embeddings(nn.Module):
         self.features_dim = features_dim
         if self.features_dim:
             self.linear_video = nn.Linear(features_dim, config.hidden_size)
+        self.n_prompt = config.n_prompt
+        if self.n_prompt > 0:
+            self.prompt_embedding = nn.Embedding(self.n_prompt, config.hidden_size)
 
     def get_video_embedding(self, video):
         video = self.linear_video(video)
@@ -1013,17 +1016,17 @@ class DebertaV2Embeddings(nn.Module):
             if self.features_dim and video is not None:
                 video = self.get_video_embedding(video)
                 inputs_embeds = torch.cat([video, inputs_embeds], 1)
-                input_shape = inputs_embeds[:, :, 0].shape
+            if self.n_prompt > 0:
+                prompt_ids = torch.arange(self.n_prompt, device=inputs_embeds.device).expand(input_shape[0], -1)
+                prompt = self.prompt_embedding(prompt_ids)
+                inputs_embeds = torch.cat([inputs_embeds, prompt], 1)
+            input_shape = inputs_embeds[:, :, 0].shape
 
         seq_length = input_shape[1]
+        vt_length = seq_length - self.n_prompt
 
         if position_ids is None:
             position_ids = self.position_ids[:, :seq_length]
-
-        if token_type_ids is None:
-            token_type_ids = torch.zeros(
-                input_shape, dtype=torch.long, device=self.position_ids.device
-            )
 
         if self.position_embeddings is not None:
             position_embeddings = self.position_embeddings(position_ids.long())
@@ -1034,6 +1037,9 @@ class DebertaV2Embeddings(nn.Module):
         if self.position_biased_input:
             embeddings += position_embeddings
         if self.config.type_vocab_size > 0:
+            token_type_ids = torch.zeros(input_shape).to(self.position_ids)
+            token_type_ids[:, video.size(1): vt_length] = 1
+            token_type_ids[:, vt_length:] = 2
             token_type_embeddings = self.token_type_embeddings(token_type_ids)
             embeddings += token_type_embeddings
 
@@ -1054,7 +1060,7 @@ class DebertaV2Embeddings(nn.Module):
         embeddings = self.dropout(embeddings)
         return {
             "embeddings": embeddings,
-            "position_embeddings": position_embeddings,
+            "position_embeddings": position_embeddings
         }
 
 
@@ -1130,6 +1136,7 @@ class DebertaV2Model(DebertaV2PreTrainedModel):
         ds_factor_attn=8,
         ds_factor_ff=8,
         ft_ln=False,
+        ft_type=False,
         dropout=0.1,
     ):
         super().__init__(config)
@@ -1151,8 +1158,10 @@ class DebertaV2Model(DebertaV2PreTrainedModel):
         self.max_feats = max_feats
         if freeze_lm:
             for n, p in self.named_parameters():
-                if (not "linear_video" in n) and (not "adapter" in n):
+                if (not "linear_video" in n) and (not "adapter" in n) and (not "prompt" in n):
                     if ft_ln and "LayerNorm" in n:
+                        continue
+                    elif ft_type and "type" in n:
                         continue
                     else:
                         p.requires_grad_(False)
@@ -1222,10 +1231,9 @@ class DebertaV2Model(DebertaV2PreTrainedModel):
                 video_shape = video[:, :, 0].size()
                 video_mask = torch.ones(video_shape, device=device)
             attention_mask = torch.cat([video_mask, attention_mask], 1)
-            input_shape = attention_mask.size()
-
-        if token_type_ids is None:
-            token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
+        if self.config.n_prompt > 0:
+            attention_mask = torch.cat(
+                [attention_mask, torch.ones(input_shape[0], self.config.n_prompt).to(attention_mask)], 1)
 
         embedding_output = self.embeddings(
             input_ids=input_ids,
@@ -1237,7 +1245,7 @@ class DebertaV2Model(DebertaV2PreTrainedModel):
         )
         embedding_output, position_embeddings = (
             embedding_output["embeddings"],
-            embedding_output["position_embeddings"],
+            embedding_output["position_embeddings"]
         )
 
         encoder_outputs = self.encoder(
@@ -1300,9 +1308,12 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
         ds_factor_attn=8,
         ds_factor_ff=8,
         ft_ln=True,
+        ft_type=True,
         dropout=0.1,
         n_ans=0,
         freeze_last=True,
+        n_prompt=0,
+        use_type=False
     ):
         """
         :param config: BiLM configuration
@@ -1316,7 +1327,9 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
         :param freeze_last: whether to freeze or not the answer embedding module
         """
         super().__init__(config)
-
+        if use_type:
+            config.type_vocab_size = 3 if n_prompt > 0 else 2
+        config.n_prompt = n_prompt
         self.deberta = DebertaV2Model(
             config,
             max_feats,
@@ -1325,6 +1338,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
             ds_factor_attn,
             ds_factor_ff,
             ft_ln,
+            ft_type,
             dropout,
         )
         self.lm_predictions = DebertaV2OnlyMLMHead(config)
