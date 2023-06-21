@@ -26,6 +26,12 @@ from metrics.eval_metrics import mean_average_precision
 logging.basicConfig(level=logging.ERROR)
 
 
+def ema_prompt(teacher, student, beta=0.99):
+    t_prompt = teacher.deberta.embeddings.prompt_embedding
+    s_prompt = student.deberta.embeddings.prompt_embedding
+    t_prompt.weight.data = beta * t_prompt.weight + (1-beta) * s_prompt.weight
+
+
 def train_one_epoch(
     teacher: torch.nn.Module,
     student: torch.nn.Module,
@@ -66,6 +72,8 @@ def train_one_epoch(
 
         # teacher forward
         with torch.no_grad():
+            if args.n_prompt > 0:
+                ema_prompt(teacher, student, beta=0.99)
             teacher_output = teacher(
                 video=video,
                 video_mask=video_mask,
@@ -83,10 +91,10 @@ def train_one_epoch(
 
         mask = text_ids == tokenizer.mask_token_id
         delay = args.max_feats if args.use_video else 0
-        t_logits = teacher_output["logits"][:, delay:][mask]  # (B, C)
-        s_logits = student_output["logits"][:, delay:][mask]
-        t_rep = teacher_output["hidden_states"][:, delay:][mask]
-        s_rep = student_output["hidden_states"][:, delay:][mask]
+        t_logits = teacher_output["logits"][:, delay: text_ids.size(1) + delay][mask]  # (B, C)
+        s_logits = student_output["logits"][:, delay: text_ids.size(1) + delay][mask]
+        t_rep = teacher_output["hidden_states"][:, delay: text_ids.size(1) + delay][mask]
+        s_rep = student_output["hidden_states"][:, delay: text_ids.size(1) + delay][mask]
         answer_id = batch_dict["answer_id"].to(device)
 
         ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=10)
@@ -306,7 +314,6 @@ def main(args):
         )
     else:
         dataloader_train = None
-
 
     args.n_ans = len(dataloader_test.dataset.a2id)
     model = build_model(args)
