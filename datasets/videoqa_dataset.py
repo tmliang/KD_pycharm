@@ -21,7 +21,10 @@ class VideoQA_Dataset(Dataset):
         prefix="",
         suffix=".",
         tokenizer=None,
-        type_map=None
+        fib=False,
+        type_map=None,
+        subtitles_path=None,
+        use_context=False,
     ):
         self.data = pd.read_csv(csv_path)
         self.features = th.load(features_path)
@@ -32,6 +35,7 @@ class VideoQA_Dataset(Dataset):
         self.prefix = prefix
         self.suffix = suffix
         self.mask = tokenizer.mask_token
+        self.fib = fib
         self.type_map = type_map
         if train:  # for training remove answers that are not in vocab
             print(len(self.data))
@@ -54,12 +58,23 @@ class VideoQA_Dataset(Dataset):
                     ok.append(i)
             self.data = self.data[self.data.index.isin(ok)]
             print(len(self.data))
+        self.use_context = use_context
+        if subtitles_path:
+            self.subs = pickle.load(open(subtitles_path, "rb"))
+        else:
+            self.subs = None
 
     def __len__(self):
         return len(self.data)
 
     def _get_text(self, question, mask, sub):
-        text = f"{self.prefix} Question: {question} Answer: {mask}{self.suffix}"
+        text = (
+            f"{self.prefix} Question: {question} Answer: {mask}{self.suffix}"
+            if not self.fib
+            else f"{self.prefix} {question.replace('_____', mask)}"
+        )
+        if sub:
+            text += f" Subtitles: {sub}"
         text = text.strip()
         return text
 
@@ -87,7 +102,7 @@ class VideoQA_Dataset(Dataset):
     def __getitem__(self, idx):
         # get question
         question = self.data["question"].values[idx].capitalize().strip()
-        if question[-1] != "?":
+        if question[-1] != "?" and not self.fib:
             question = str(question) + "?"
         type = 0
         if "type" in self.data:
@@ -121,9 +136,16 @@ class VideoQA_Dataset(Dataset):
 
         video_id = self.data["video_id"].values[idx]
 
+        # get subtitles
+        sub = ""
+        if self.subs is not None and video_id in self.subs:
+            sub = self.subs[video_id]
+        sub_bool = bool(sub)
+        if not self.use_context:
+            sub = ""
+
         # get pattern
-        text = question
-        # text = self._get_text(question, self.mask, sub)
+        text = self._get_text(question, self.mask, sub)
 
         # get video
         video, video_len = self._get_video(video_id)
@@ -135,6 +157,7 @@ class VideoQA_Dataset(Dataset):
             "qid": idx,
             "answer_id": answer_id,
             "type": type,
+            "sub": sub_bool,
             "answer": answer,
         }
 
@@ -269,7 +292,12 @@ def build_videoqa_dataset(dataset_name, split, args, tokenizer):
             prefix=args.prefix,
             suffix=args.suffix,
             tokenizer=tokenizer,
-            type_map=type_map
+            type_map=type_map,
+            subtitles_path=subtitles_path,
+            use_context=(
+                args.use_context and dataset_name != "tgif"
+            ),  # no speech in GIFs
+            fib=(dataset_name == "lsmdc"),
         )
     elif dataset_name == "vqa":
         return build_vqa_dataset(split, args, tokenizer)
