@@ -394,4 +394,14 @@ def get_args_parser():
     parser.add_argument("--alpha0", default=0, type=float)
     parser.add_argument("--alpha1", default=0, type=float)
     parser.add_argument("--alpha2", default=0, type=float)
-    return parser
+    parser.add_argument(
+        "--n_sample",
+        type=int,
+        default=3
+    )
+    parser.add_argument(
+        "--us_factor",
+        type=int,
+        default=8
+    )
+    return parser.parse_args()

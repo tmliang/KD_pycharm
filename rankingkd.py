@@ -72,8 +72,8 @@ def train_one_epoch(
 
         # teacher forward
         with torch.no_grad():
-            if args.n_prompt > 0:
-                ema_prompt(teacher, student, beta=0.99)
+            # if args.n_prompt > 0:
+            #     ema_prompt(teacher, student, beta=0.99)
             teacher_output = teacher(
                 video=video,
                 video_mask=video_mask,
@@ -512,8 +512,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(parents=[get_args_parser()])
-    args = parser.parse_args()
+    args = get_args_parser()
     if args.save_dir:
         args.save_dir = os.path.join(args.presave_dir, args.save_dir)
     main(args)

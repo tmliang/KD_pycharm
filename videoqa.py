@@ -63,17 +63,27 @@ def train_one_epoch(
         )
 
         delay = args.max_feats if args.use_video else 0
-        logits = output["logits"][:, delay: text_ids.size(1) + delay][text_ids == tokenizer.mask_token_id]
+        point_logits = output["logits"][:, delay: text_ids.size(1) + delay][text_ids == tokenizer.mask_token_id]
+        rep = output["hidden_states"][:, delay: text_ids.size(1) + delay][text_ids == tokenizer.mask_token_id]
+
+        hib_ins = model.sample_ins_embeddings(rep, args.n_sample)
+        hib_ans = model.sample_ans_embeddings(args.n_sample)
+        hib_logits = torch.matmul(hib_ins.unsqueeze(1), hib_ans.transpose(1, 2)).mean((2, 3))
+        # (B, k, d), (C, k, d) -> (B, C, k, k) -> (B, C)
 
         answer_id = batch_dict["answer_id"].to(device)
-        if dataset_name == "ivqa":
-            a = (answer_id / 2).clamp(max=1)
-            nll = -F.log_softmax(logits, 1, _stacklevel=5)
-            loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
-        else:
-            loss = F.cross_entropy(logits, answer_id)
 
-        loss_dict = {"loss": loss}
+        losses = []
+        for l in [point_logits, hib_logits]:
+            if dataset_name == "ivqa":
+                a = (answer_id / 2).clamp(max=1)
+                nll = -F.log_softmax(l, 1, _stacklevel=5)
+                losses.append((nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean())
+            else:
+                losses.append(F.cross_entropy(l, answer_id))
+
+        loss = losses[0] + args.sigma * losses[1]
+        loss_dict = {"point_loss": losses[0], "hedge_loss": losses[1]}
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = dist.reduce_dict(loss_dict)
@@ -131,75 +141,88 @@ def evaluate(
             truncation=True,
             return_tensors="pt",
         )
-        input_ids = encoded["input_ids"].to(device)
-        attention_mask = encoded["attention_mask"].to(device)
+        text_ids = encoded["input_ids"].to(device)
+        text_mask = encoded["attention_mask"].to(device)
         if (
             not args.suffix and not args.use_context
         ):  # remove sep token if not using the suffix
-            attention_mask[input_ids == tokenizer.sep_token_id] = 0
-            input_ids[input_ids == tokenizer.sep_token_id] = tokenizer.pad_token_id
+            text_mask[text_ids == tokenizer.sep_token_id] = 0
+            text_ids[text_ids == tokenizer.sep_token_id] = tokenizer.pad_token_id
 
         output = model(
             video=video,
             video_mask=video_mask,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
+            input_ids=text_ids,
+            attention_mask=text_mask,
         )
 
-        logits = output["logits"]
         delay = args.max_feats if args.use_video else 0
-        logits = logits[:, delay: input_ids.size(1) + delay][encoded["input_ids"] == tokenizer.mask_token_id]
-        logits = logits.softmax(-1)
-        topk_aids = torch.topk(logits, max(thresholds), -1).indices
+        point_logits = output["logits"][:, delay: text_ids.size(1) + delay][text_ids == tokenizer.mask_token_id]
+        rep = output["hidden_states"][:, delay: text_ids.size(1) + delay][text_ids == tokenizer.mask_token_id]
+        ins_mu, _ = model.get_ins_distribution(rep)
+        ans_mu, _ = model.get_ans_distribution()
+        hib_logits = ins_mu @ ans_mu.t()
+
+        point_topk_aids = torch.topk(point_logits, max(thresholds), -1).indices
+        hib_topk_aids = torch.topk(hib_logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
         if dataset_name == "ivqa":
             answer_id = (answer_id / 2).clamp(max=1)
             answer_id_expanded = answer_id.to(device)
         else:
-            answer_id_expanded = answer_id.view(-1, 1).expand_as(topk_aids).to(device)
+            answer_id_expanded = answer_id.view(-1, 1).expand_as(point_topk_aids).to(device)
 
-        maps = mean_average_precision(topk_aids, answer_id)
+        point_maps = mean_average_precision(point_topk_aids, answer_id)
+        hib_maps = mean_average_precision(hib_topk_aids, answer_id)
 
-        agreeings = {}
+        point_agreeings = {}
+        hib_agreeings = {}
         for x in thresholds:
             if dataset_name == "ivqa":
-                predicted = F.one_hot(
-                    topk_aids[:, :x], num_classes=answer_id_expanded.shape[-1]
-                ).sum(1)
-                agreeings[x] = (predicted * answer_id_expanded).max(1)[0]
+                predicted = F.one_hot(point_topk_aids[:, :x], num_classes=answer_id_expanded.shape[-1]).sum(1)
+                point_agreeings[x] = (predicted * answer_id_expanded).max(1)[0]
+                predicted = F.one_hot(hib_topk_aids[:, :x], num_classes=answer_id_expanded.shape[-1]).sum(1)
+                hib_agreeings[x] = (predicted * answer_id_expanded).max(1)[0]
             else:
-                agreeings[x] = topk_aids[:, :x] == answer_id_expanded[:, :x]
+                point_agreeings[x] = point_topk_aids[:, :x] == answer_id_expanded[:, :x]
+                hib_agreeings[x] = hib_topk_aids[:, :x] == answer_id_expanded[:, :x]
 
-        for i, (qid, gt, pred) in enumerate(
-                zip(qids, answer_id, topk_aids)
+        for i, (qid, gt, point_pred, hib_pred) in enumerate(
+                zip(qids, answer_id, point_topk_aids, hib_topk_aids)
         ):
             res[qid] = {
-                "pred": pred.tolist(),
-                "gt": gt.tolist() if dataset_name == "ivqa" else gt.item(),
-                "map": maps.item()
+                "point_map": point_maps.item(),
+                "hib_map": hib_maps.item(),
             }
             for x in thresholds:
-                res[qid][f"acc{x}"] = agreeings[x][i].sum().detach().cpu().item()
+                res[qid][f"acc{x}"] = {"point": point_agreeings[x][i].sum().detach().cpu().item(),
+                                       "hib": hib_agreeings[x][i].sum().detach().cpu().item(),
+                                       }
 
-        dico = {"acc": agreeings[1].sum() / len(qids)}
+        dico = {"point_acc": point_agreeings[1].sum() / len(qids), "hib_acc": hib_agreeings[1].sum() / len(qids)}
         dico_reduced = dist.reduce_dict(dico)
-        acc_value = dico_reduced["acc"].item()
-        metric_logger.update(acc=acc_value)
+        point_acc = dico_reduced["point_acc"].item()
+        hib_acc = dico_reduced["hib_acc"].item()
+        metric_logger.update(point_acc=point_acc, hib_acc=hib_acc)
 
     all_res = dist.all_gather(res)
     results = reduce(lambda a, b: a.update(b) or a, all_res, {})
     assert len(results) == len(data_loader.dataset)
     out = {}
     for x in thresholds:
-        out[f"acc{x}"] = sum(results[qid][f"acc{x}"] for qid in results) / len(results)
-    out["map"] = sum(results[qid][f"map"] for qid in results) / len(results)
+        out[f"point_acc{x}"] = sum(results[qid][f"acc{x}"]["point"] for qid in results) / len(results)
+        out[f"hib_acc{x}"] = sum(results[qid][f"acc{x}"]["hib"] for qid in results) / len(results)
+    out["point_map"] = sum(results[qid][f"point_map"] for qid in results) / len(results)
+    out["hib_map"] = sum(results[qid][f"hib_map"] for qid in results) / len(results)
 
     if dist.is_main_process():
         print(dataset_name)
         for x in thresholds:
-            print(f"acc{x}: {out[f'acc{x}']: .2%}")
-        print(f"map@10: {out['map']: .2%}")
+            print(f"point_acc{x}: {out[f'point_acc{x}']: .2%}")
+            print(f"hib_acc{x}: {out[f'hib_acc{x}']: .2%}")
+        print(f"point_map@10: {out['point_map']: .2%}")
+        print(f"hib_map@10: {out['hib_map']: .2%}")
     return results, out
 
 
@@ -262,12 +285,10 @@ def main(args):
     args.n_ans = len(dataloader_test.dataset.a2id)
     model = build_model(args)
     model.to(device)
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    if dist.is_main_process():
-        print("number of params:", n_parameters)
 
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
+
     optimizer = torch.optim.Adam(
         params_for_optimization,
         lr=args.lr,
@@ -284,6 +305,7 @@ def main(args):
             optimizer.load_state_dict(checkpoint["optimizer"])
             args.start_epoch = checkpoint["epoch"] + 1
 
+    # init answer embedding module
     aid2tokid = torch.zeros(len(dataloader_test.dataset.a2id), args.max_atokens).long()
     for a, aid in dataloader_test.dataset.a2id.items():
         tok = torch.tensor(
@@ -299,7 +321,8 @@ def main(args):
         aid2tokid[aid] = tok
     model.set_answer_embeddings(
         aid2tokid.to(model.device), freeze_last=args.freeze_last
-    )  # init answer embedding module
+    )
+
     if not args.eval:
         if dist.is_main_process():
             print("Start training")
@@ -340,9 +363,9 @@ def main(args):
                 val_stats.update(
                     {args.dataset + "_" + k: v for k, v in out.items()}
                 )
-                if out["acc1"] > best_acc:
+                if out["point_acc1"] > best_acc:
                     best_epoch = epoch
-                    best_acc = out["acc1"]
+                    best_acc = out["point_acc1"]
 
                     if dist.is_main_process() and args.save_dir:
                         checkpoint_path = os.path.join(
@@ -381,7 +404,6 @@ def main(args):
                 **{f"train_{k}": v for k, v in train_stats.items()},
                 **{f"val_{k}": v for k, v in val_stats.items()},
                 "epoch": epoch,
-                "n_parameters": n_parameters,
             }
 
             if args.save_dir and dist.is_main_process():
@@ -438,8 +460,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(parents=[get_args_parser()])
-    args = parser.parse_args()
+    args = get_args_parser()
     if args.save_dir:
         args.save_dir = os.path.join(args.presave_dir, args.save_dir)
     main(args)

@@ -424,9 +424,11 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(parents=[get_args_parser()])
-    args = parser.parse_args()
+    args = get_args_parser()
     args = vars(args)
     args.update(nni.get_next_parameter())
+    for k, v in args.items():
+        if k[:2] == "n_":
+            args[k] = int(v)
     args = argparse.Namespace(**args)
     main(args)

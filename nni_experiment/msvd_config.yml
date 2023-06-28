@@ -1,23 +1,32 @@
 search_space:
-  n_prompt:
+  alpha0:
+    _type: quniform
+    _value: [ 0, 1, 0.01 ]
+  alpha1:
     _type: randint
-    _value: [ 0, 10 ]
-  beta:
-    _type: uniform
-    _value: [ 0, 1 ]
-  epochs:
+    _value: [ 5, 30 ]
+  alpha2:
+    _type: quniform
+    _value: [ 0, 0.1, 0.01 ]
+  warmup_alpha:
     _type: choice
-    _value: [ 3, 5, 10, 15 ]
-  lr:
-    _type: uniform
-    _value: [ 0.00001, 0.0001 ]
+    _value: [true, false]
+  ft_last:
+    _type: choice
+    _value: [true, false]
+  n_pos:
+    _type: randint
+    _value: [ 5, 30 ]
+  n_neg:
+    _type: quniform
+    _value: [ 0, 500, 10 ]
 
-trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msvd --teacher_load=ckpt/msvd/msvd_a.pth --load=ckpt/msvd/msvd_b.pth --batch_size=32 --batch_size_val=256 --no_context --loss1=stlistnet --loss2=r2kd --alpha0=0.05 --alpha1=10 --alpha2=0.1 --neg_sampler=exp
+trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msvd --batch_size=6 --batch_size_val=32
 trial_code_directory: ~/KD
 
 trialGpuNumber: 1
 trial_concurrency: 4
-max_trial_number: 100
+max_trial_number: 1000
 
 tuner:
   name: TPE
