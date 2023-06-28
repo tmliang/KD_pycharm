@@ -5,6 +5,8 @@ import numpy as np
 import random
 import json
 import copy
+import math
+import sys
 import argparse
 import logging
 import time
@@ -19,24 +21,14 @@ from model import build_model, get_tokenizer
 from args import get_args_parser
 from util.misc import get_mask, adjust_learning_rate
 from util.metrics import MetricLogger
-from kd_loss import build_ranking_loss
-from metrics.ndcg import ndcg_at_k
 from metrics.eval_metrics import mean_average_precision
 
 logging.basicConfig(level=logging.ERROR)
 
 
-def ema_prompt(teacher, student, beta=0.99):
-    t_prompt = teacher.deberta.embeddings.prompt_embedding
-    s_prompt = student.deberta.embeddings.prompt_embedding
-    t_prompt.weight.data = beta * t_prompt.weight + (1-beta) * s_prompt.weight
-
-
 def train_one_epoch(
-    teacher: torch.nn.Module,
-    student: torch.nn.Module,
+    model: torch.nn.Module,
     tokenizer,
-    ranking_loss,
     data_loader: Iterable,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
@@ -45,11 +37,10 @@ def train_one_epoch(
     args,
     max_norm: float = 0,
 ):
-    student.train()
+    model.train()
     metric_logger = MetricLogger(delimiter="  ")
     header = "Epoch: [{}]".format(epoch)
     num_training_steps = int(len(data_loader) * args.epochs)
-    ct0, ct1, ct2 = ranking_loss
 
     for i_batch, batch_dict in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
@@ -70,65 +61,30 @@ def train_one_epoch(
         text_ids = encoded["input_ids"].to(device)
         text_mask = encoded["attention_mask"].to(device)
 
-        # teacher forward
-        with torch.no_grad():
-            # if args.n_prompt > 0:
-            #     ema_prompt(teacher, student, beta=0.99)
-            teacher_output = teacher(
-                video=video,
-                video_mask=video_mask,
-                input_ids=text_ids,
-                attention_mask=text_mask
-            )
-
         # forward
-        student_output = student(
+        output = model(
             video=video,
             video_mask=video_mask,
             input_ids=text_ids,
             attention_mask=text_mask
         )
 
-        mask = text_ids == tokenizer.mask_token_id
         delay = args.max_feats if args.use_video else 0
-        t_logits = teacher_output["logits"][:, delay: text_ids.size(1) + delay][mask]  # (B, C)
-        s_logits = student_output["logits"][:, delay: text_ids.size(1) + delay][mask]
-        t_rep = teacher_output["hidden_states"][:, delay: text_ids.size(1) + delay][mask]
-        s_rep = student_output["hidden_states"][:, delay: text_ids.size(1) + delay][mask]
+        logits = output["logits"][:, :delay]  # (B, C)
         answer_id = batch_dict["answer_id"].to(device)
-
-        ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=10)
-
-        loss0, dis = ct0(t_rep, s_rep)
-        loss1 = ct1(answer_id, t_logits, s_logits)
-        loss2 = ct2(answer_id, t_logits, s_logits, dis) if args.alpha2 > 0 else 0
 
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
-            nll = -F.log_softmax(s_logits, 1, _stacklevel=5)
-            cls_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
+            nll = -F.log_softmax(logits, 1, _stacklevel=5)
+            loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
         else:
-            cls_loss = F.cross_entropy(s_logits, answer_id)
+            ind = logits.detach().softmax(-1).argmax(1).gather(1, answer_id.unsqueeze(1)).squeeze()
+            loss = F.cross_entropy(
+                logits.gather(1, ind.reshape(-1, 1, 1).expand(-1, 1, logits.size(-1))).squeeze(),
+                answer_id
+            )
 
-        if args.warmup_alpha:
-            curr_step = epoch * len(data_loader) + i_batch
-            num_warmup_steps = round(args.fraction_warmup_steps * num_training_steps)
-            if curr_step < num_warmup_steps:
-                gamma = float(curr_step) / float(max(1, num_warmup_steps))
-            else:
-                gamma = max(
-                    0.0,
-                    float(num_training_steps - curr_step)
-                    / float(max(1, num_training_steps - num_warmup_steps)),
-                )
-            alpha0 = args.alpha0 * gamma
-            alpha2 = args.alpha2 * gamma
-        else:
-            alpha0 = args.alpha0
-            alpha2 = args.alpha2
-
-        loss = cls_loss + alpha0 * loss0 + args.alpha1 * loss1 + alpha2 * loss2
-        loss_dict = {"loss": loss, "cls_loss": cls_loss, "loss0": loss0, "loss1": loss1, "loss2": loss2, "ndcg": ndcg}
+        loss_dict = {"loss": loss}
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = dist.reduce_dict(loss_dict)
@@ -136,7 +92,7 @@ def train_one_epoch(
         optimizer.zero_grad()
         loss.backward()
         if max_norm > 0:
-            torch.nn.utils.clip_grad_norm_(student.parameters(), max_norm)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         optimizer.step()
 
         adjust_learning_rate(
@@ -200,12 +156,9 @@ def evaluate(
             attention_mask=attention_mask,
         )
 
-        logits = output["logits"]
         delay = args.max_feats if args.use_video else 0
-        logits = logits[:, delay: encoded["input_ids"].size(1) + delay][
-            encoded["input_ids"] == tokenizer.mask_token_id
-        ]  # get the prediction on the mask token
-        logits = logits.softmax(-1)
+        logits = output["logits"][:, :delay].softmax(-1).max(1).values
+        logits = logits.max(1).values
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
@@ -315,6 +268,7 @@ def main(args):
     else:
         dataloader_train = None
 
+
     args.n_ans = len(dataloader_test.dataset.a2id)
     model = build_model(args)
     model.to(device)
@@ -322,32 +276,18 @@ def main(args):
     if dist.is_main_process():
         print("number of params:", n_parameters)
 
-    # setting loss
-    ranking_loss = build_ranking_loss(args)
 
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
-    if args.project:
-        params_for_optimization += list(p for p in ranking_loss[0].projector.parameters())
     optimizer = torch.optim.Adam(
         params_for_optimization,
         lr=args.lr
     )
 
-    # load teacher
-    teacher = None
-    if args.teacher_load and not args.eval:
-        if dist.is_main_process():
-            print("loading teacher from %s" % args.teacher_load)
-        teacher = copy.deepcopy(model)
-        checkpoint = torch.load(args.teacher_load, map_location="cpu")
-        teacher.load_state_dict(checkpoint["model"], strict=False)
-        teacher.eval()
-
-    # load student
+    # load model
     if args.load:
         if dist.is_main_process():
-            print("loading student from", args.load)
+            print("loading model from", args.load)
         checkpoint = torch.load(args.load, map_location="cpu")
         model.load_state_dict(checkpoint["model"], strict=False)
         if args.resume and not args.eval:
@@ -371,7 +311,6 @@ def main(args):
         aid2tokid.to(model.device), freeze_last=args.freeze_last
     )  # init answer embedding module
     if not args.eval:
-        teacher.set_answer_embeddings(aid2tokid.to(model.device))
         if dist.is_main_process():
             print("Start training")
         start_time = time.time()
@@ -383,10 +322,8 @@ def main(args):
             if args.distributed:
                 sampler_train.set_epoch(epoch)
             train_stats = train_one_epoch(
-                teacher=teacher,
-                student=model,
+                model=model,
                 tokenizer=tokenizer,
-                ranking_loss=ranking_loss,
                 data_loader=dataloader_train,
                 optimizer=optimizer,
                 device=device,
@@ -512,7 +449,8 @@ def main(args):
 
 
 if __name__ == "__main__":
-    args = get_args_parser()
+    parser = argparse.ArgumentParser(parents=[get_args_parser()])
+    args = parser.parse_args()
     if args.save_dir:
         args.save_dir = os.path.join(args.presave_dir, args.save_dir)
     main(args)

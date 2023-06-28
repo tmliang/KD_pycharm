@@ -37,6 +37,8 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers import DebertaV2Config
 from model.hib import HedgedInstanceEmbedding
 
+from .hib import HedgedInstanceEmbedding
+
 
 _CONFIG_FOR_DOC = "DebertaV2Config"
 _TOKENIZER_FOR_DOC = "DebertaV2Tokenizer"
@@ -969,11 +971,6 @@ class DebertaV2Embeddings(nn.Module):
             config.max_position_embeddings, self.embedding_size
         )  # it is used for the decoder anyway
 
-        if config.type_vocab_size > 0:
-            self.token_type_embeddings = nn.Embedding(
-                config.type_vocab_size, self.embedding_size
-            )
-
         if self.embedding_size != config.hidden_size:
             self.embed_proj = nn.Linear(
                 self.embedding_size, config.hidden_size, bias=False
@@ -990,6 +987,9 @@ class DebertaV2Embeddings(nn.Module):
         self.features_dim = features_dim
         if self.features_dim:
             self.linear_video = nn.Linear(features_dim, config.hidden_size)
+        self.n_prompt = config.n_prompt
+        if self.n_prompt > 0:
+            self.prompt_embedding = nn.Embedding(self.n_prompt, config.hidden_size)
 
     def get_video_embedding(self, video):
         video = self.linear_video(video)
@@ -1014,17 +1014,17 @@ class DebertaV2Embeddings(nn.Module):
             if self.features_dim and video is not None:
                 video = self.get_video_embedding(video)
                 inputs_embeds = torch.cat([video, inputs_embeds], 1)
-                input_shape = inputs_embeds[:, :, 0].shape
+            if self.n_prompt > 0:
+                prompt_ids = torch.arange(self.n_prompt, device=inputs_embeds.device).expand(input_shape[0], -1)
+                prompt = self.prompt_embedding(prompt_ids)
+                inputs_embeds = torch.cat([inputs_embeds, prompt], 1)
+            input_shape = inputs_embeds[:, :, 0].shape
 
         seq_length = input_shape[1]
+        vt_length = seq_length - self.n_prompt
 
         if position_ids is None:
             position_ids = self.position_ids[:, :seq_length]
-
-        if token_type_ids is None:
-            token_type_ids = torch.zeros(
-                input_shape, dtype=torch.long, device=self.position_ids.device
-            )
 
         if self.position_embeddings is not None:
             position_embeddings = self.position_embeddings(position_ids.long())
@@ -1034,9 +1034,6 @@ class DebertaV2Embeddings(nn.Module):
         embeddings = inputs_embeds
         if self.position_biased_input:
             embeddings += position_embeddings
-        if self.config.type_vocab_size > 0:
-            token_type_embeddings = self.token_type_embeddings(token_type_ids)
-            embeddings += token_type_embeddings
 
         if self.embedding_size != self.config.hidden_size:
             embeddings = self.embed_proj(embeddings)
@@ -1055,7 +1052,7 @@ class DebertaV2Embeddings(nn.Module):
         embeddings = self.dropout(embeddings)
         return {
             "embeddings": embeddings,
-            "position_embeddings": position_embeddings,
+            "position_embeddings": position_embeddings
         }
 
 
@@ -1152,7 +1149,7 @@ class DebertaV2Model(DebertaV2PreTrainedModel):
         self.max_feats = max_feats
         if freeze_lm:
             for n, p in self.named_parameters():
-                if (not "linear_video" in n) and (not "adapter" in n):
+                if (not "linear_video" in n) and (not "adapter" in n) and (not "prompt" in n):
                     if ft_ln and "LayerNorm" in n:
                         continue
                     else:
@@ -1223,10 +1220,9 @@ class DebertaV2Model(DebertaV2PreTrainedModel):
                 video_shape = video[:, :, 0].size()
                 video_mask = torch.ones(video_shape, device=device)
             attention_mask = torch.cat([video_mask, attention_mask], 1)
-            input_shape = attention_mask.size()
-
-        if token_type_ids is None:
-            token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
+        if self.config.n_prompt > 0:
+            attention_mask = torch.cat(
+                [attention_mask, torch.ones(input_shape[0], self.config.n_prompt).to(attention_mask)], 1)
 
         embedding_output = self.embeddings(
             input_ids=input_ids,
@@ -1238,7 +1234,7 @@ class DebertaV2Model(DebertaV2PreTrainedModel):
         )
         embedding_output, position_embeddings = (
             embedding_output["embeddings"],
-            embedding_output["position_embeddings"],
+            embedding_output["position_embeddings"]
         )
 
         encoder_outputs = self.encoder(
@@ -1304,6 +1300,8 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
         dropout=0.1,
         n_ans=0,
         freeze_last=True,
+        n_prompt=0,
+        hib_factor=2
     ):
         """
         :param config: BiLM configuration
@@ -1317,7 +1315,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
         :param freeze_last: whether to freeze or not the answer embedding module
         """
         super().__init__(config)
-
+        config.n_prompt = n_prompt
         self.deberta = DebertaV2Model(
             config,
             max_feats,
@@ -1347,6 +1345,8 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
             if freeze_last:
                 self.answer_embeddings.requires_grad_(False)
                 self.answer_bias.requires_grad_(False)
+        self.ins_hib = HedgedInstanceEmbedding(hib_factor, config.hidden_size)
+        self.ans_hib = HedgedInstanceEmbedding(hib_factor, config.hidden_size)
 
     def get_output_embeddings(self):
         return self.lm_predictions.lm_head.decoder
@@ -1430,12 +1430,10 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
         token_type_ids=None,
         position_ids=None,
         inputs_embeds=None,
-        labels=None,
         output_attentions=None,
         return_dict=None,
         video=None,
-        video_mask=None,
-        mlm=False,
+        video_mask=None
     ):
         r"""
         labels (:obj:`torch.LongTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
@@ -1461,19 +1459,6 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
             video_mask=video_mask,
         )
 
-        if labels is not None:
-            if (
-                self.features_dim and video is not None
-            ):  # ignore the label predictions for visual tokens
-                video_shape = video[:, :, 0].size()
-                video_labels = torch.tensor(
-                    [[-100] * video_shape[1]] * video_shape[0],
-                    dtype=torch.long,
-                    device=labels.device,
-                )
-                labels = torch.cat([video_labels, labels], 1)
-
-        # sequence_output = outputs[0]
         modified = self.emd_context_layer(
             encoder_layers=outputs["hidden_states"],
             z_states=outputs["position_embeddings"].repeat(
@@ -1482,35 +1467,31 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
             attention_mask=outputs["attention_mask"],
             encoder=self.deberta.encoder,
         )
-        bias = None
-        if self.n_ans and (not mlm):  # downstream mode
-            embeddings = self.answer_embeddings.weight
-            bias = self.answer_bias
-        else:
-            embeddings = self.deberta.embeddings.word_embeddings.weight
+        embeddings = self.answer_embeddings.weight
+        bias = self.answer_bias
         prediction_scores = self.lm_predictions(modified[-1], embeddings, bias)
 
-        masked_lm_loss = None
-        if labels is not None:
-            loss_fct = CrossEntropyLoss()  # -100 index = padding token
-
-            masked_lm_loss = loss_fct(
-                prediction_scores.view(-1, self.config.vocab_size),
-                labels.view(-1),  # labels[labels > 0].view(-1)
-            )
-
-        if not return_dict:
-            output = (prediction_scores,) + outputs[1:]
-            return (
-                ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
-            )
-
         return MaskedLMOutput(
-            loss=masked_lm_loss,
             logits=prediction_scores,
             hidden_states=modified[-1],
             attentions=outputs.attentions,
         )
+
+    def sample_ins_embeddings(self, x, num_sample):
+        '''
+        x shape: [N, d]
+        output shape: [N, num_sample, d]
+        '''
+        return self.ins_hib(x, num_sample)
+
+    def sample_ans_embeddings(self, num_sample):
+        return self.ans_hib(self.answer_embeddings.weight, num_sample)
+
+    def get_ins_distribution(self, x):
+        return self.ins_hib.get_distribution(x)
+
+    def get_ans_distribution(self):
+        return self.ans_hib.get_distribution(self.answer_embeddings.weight)
 
 
 # copied from transformers.models.bert.BertPredictionHeadTransform with bert -> deberta

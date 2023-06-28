@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from typing import Tuple, List
 import random
 
@@ -63,15 +64,16 @@ def adjust_learning_rate(
     args,
 ):
     num_warmup_steps: int = round(args.fraction_warmup_steps * num_training_steps)
-    if args.schedule == "linear_with_warmup":
+    if args.schedule == "linear_with_warmup" or args.schedule == "cosine_annealing_with_warmup":
         if curr_step < num_warmup_steps:
             gamma = float(curr_step) / float(max(1, num_warmup_steps))
         else:
-            gamma = max(
-                0.0,
-                float(num_training_steps - curr_step)
-                / float(max(1, num_training_steps - num_warmup_steps)),
-            )
+            total = float(max(1, num_training_steps - num_warmup_steps))
+            if args.schedule == "linear_with_warmup":
+                gamma = float(num_training_steps - curr_step) / total
+            else:
+                gamma = 0.5 * (1. + np.cos(np.pi * float(curr_step - num_warmup_steps) / total))
+            gamma = max(0.0, gamma)
     else:  # constant LR
         gamma = 1
 
