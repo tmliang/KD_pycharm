@@ -35,6 +35,7 @@ from transformers.modeling_outputs import (
 )
 from transformers.modeling_utils import PreTrainedModel
 from transformers import DebertaV2Config
+from model.hib import HedgedInstanceEmbedding
 
 
 _CONFIG_FOR_DOC = "DebertaV2Config"
@@ -1335,7 +1336,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
                     continue
                 else:
                     p.requires_grad_(False)
-
+        self.hib = HedgedInstanceEmbedding(ds_factor_ff, config.hidden_size, dropout)
         self.init_weights()
         self.n_ans = n_ans
         if n_ans:
@@ -1377,6 +1378,18 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
         if freeze_last:
             self.answer_embeddings.requires_grad_(False)
             self.answer_bias.requires_grad_(False)
+
+    def get_hib_embeddings(self, x, num_sample):
+        return self.hib(x, num_sample)
+
+    def hib_loss(self, x, loss='euclid'):
+        if loss == 'euclid':
+            return self.hib.euclid_loss(x, self.answer_embeddings.weight)
+        elif loss == 'product':
+            return self.hib.product_loss(x, self.answer_embeddings.weight)
+        elif loss == 'regular':
+            mu, sigma = x
+            return -0.5 * (1 + sigma.log() - mu.pow(2) - sigma).sum()
 
     def emd_context_layer(self, encoder_layers, z_states, attention_mask, encoder):
         if attention_mask.dim() <= 2:

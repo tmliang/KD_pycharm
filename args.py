@@ -383,11 +383,12 @@ def get_args_parser():
         action="store_true"
     )
     parser.add_argument(
-        "--tail_step",
+        "--n_sample",
         type=int,
         default=10
     )
     parser.add_argument("--alpha0", default=0, type=float)
     parser.add_argument("--alpha1", default=0, type=float)
     parser.add_argument("--alpha2", default=0, type=float)
+    parser.add_argument("--h2p_loss", default='product', type=str, choices=['euclid', 'product'])
     return parser
