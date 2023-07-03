@@ -26,6 +26,7 @@ class RankNet(nn.Module):
         target = ((t_diff.sign() + 1) / 2).masked_fill(~mask, 0)
 
         return F.binary_cross_entropy(input=score, target=target, reduction='sum') / tgt_score.size(0)
+        # use nn.BCEWithLogitsLoss instead of F.binary_cross_entropy
 
 
 # if __name__ == '__main__':

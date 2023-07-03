@@ -376,6 +376,19 @@ def get_args_parser():
         "--project",
         action="store_true"
     )
+    parser.add_argument(
+        "--n_sample",
+        type=int,
+        default=10
+    )
+    parser.add_argument(
+        "--hib_factor",
+        type=int,
+        default=8,
+        help="downsampling factor for hib"
+    )
+    parser.add_argument("--h2p_loss", default='product', type=str, choices=['euclid', 'product'])
+    parser.add_argument("--hib_lr", default=5e-5, type=float)
     parser.add_argument("--alpha0", default=0, type=float)
     parser.add_argument("--alpha1", default=0, type=float)
     parser.add_argument("--alpha2", default=0, type=float)

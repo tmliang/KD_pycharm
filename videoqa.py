@@ -15,14 +15,14 @@ from torch.utils.data import DataLoader, DistributedSampler
 from functools import reduce
 
 from datasets import build_videoqa_dataset, videoqa_collate_fn
-from model import build_model, get_tokenizer
+from model import build_model, get_tokenizer, HedgedInstanceEmbedding
 from args import get_args_parser
 from util.misc import get_mask, adjust_learning_rate
 from util.metrics import MetricLogger
 
 
 def train_one_epoch(
-    model: torch.nn.Module,
+    model_set,
     tokenizer,
     data_loader: Iterable,
     optimizer: torch.optim.Optimizer,
@@ -32,7 +32,9 @@ def train_one_epoch(
     args,
     max_norm: float = 0,
 ):
+    model, hib = model_set
     model.train()
+    hib.train()
     metric_logger = MetricLogger(delimiter="  ")
     header = "Epoch: [{}]".format(epoch)
     num_training_steps = int(len(data_loader) * args.epochs)
@@ -64,32 +66,28 @@ def train_one_epoch(
             attention_mask=attention_mask,
         )
         delay = args.max_feats if args.use_video else 0
-        logits = output["logits"][:, delay : encoded["input_ids"].size(1) + delay][
-            encoded["input_ids"] == tokenizer.mask_token_id
-        ]
+        p2p_logits = output["logits"][:, delay: inputs.size(1) + delay][inputs == tokenizer.mask_token_id]
+        rep = output["hidden_states"][:, delay: inputs.size(1) + delay][inputs == tokenizer.mask_token_id]
+        hib_emb, mu, sigma = hib(rep, args.n_sample)
+        h2p_logits = hib.hedge2point_loss(hib_emb, model.answer_embeddings.weight, loss=args.h2p_loss)
+        reg_loss = hib.regularization(mu, sigma)
+
         answer_id = batch_dict["answer_id"].to(device)
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
-            nll = -F.log_softmax(logits, 1, _stacklevel=5)
-            loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
-        elif dataset_name == "vqa":
-            a = (answer_id / 3).clamp(max=1)
-            nll = -F.log_softmax(logits, 1, _stacklevel=5)
-            loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
+            nll = -F.log_softmax(p2p_logits, 1, _stacklevel=5)
+            p2p_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
+            nll = -F.log_softmax(h2p_logits, 1, _stacklevel=5)
+            h2p_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
         else:
-            loss = F.cross_entropy(logits, answer_id)
+            p2p_loss = F.cross_entropy(p2p_logits, answer_id)
+            h2p_loss = F.cross_entropy(h2p_logits, answer_id)
 
-        loss_dict = {"cls_loss": loss}
+        loss = p2p_loss + args.alpha0 * h2p_loss + args.alpha1 * reg_loss
+        loss_dict = {"loss": loss, "p2p-loss": p2p_loss, "h2p-loss": h2p_loss, "reg_loss": reg_loss}
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = dist.reduce_dict(loss_dict)
-        loss_reduced = sum(loss_dict_reduced.values())
-        loss_value = loss_reduced.item()
-
-        if not math.isfinite(loss_value):
-            print("Loss is {}, stopping training".format(loss_value))
-            print(loss_dict_reduced)
-            sys.exit(1)
 
         optimizer.zero_grad()
         loss.backward()
@@ -104,8 +102,7 @@ def train_one_epoch(
             args=args,
         )
 
-        metric_logger.update(loss=loss_value, **loss_dict_reduced)
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        metric_logger.update(**loss_dict_reduced)
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
@@ -263,7 +260,7 @@ def main(args):
 
     # Build model
     tokenizer = get_tokenizer(args)
-    
+
     dataset_test = build_videoqa_dataset(
         args.dataset,
         "test",
@@ -300,20 +297,22 @@ def main(args):
     else:
         dataloader_train = None
 
-
     args.n_ans = len(dataloader_test.dataset.a2id)
     model = build_model(args)
     model.to(device)
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    if dist.is_main_process():
-        print("number of params:", n_parameters)
+    hib = HedgedInstanceEmbedding(args.hib_factor, model.config.hidden_size, args.dropout)
+    hib.to(device)
+    model_set = (model, hib)
 
     # Set up optimizer
-    params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
-    optimizer = torch.optim.Adam(
-        params_for_optimization,
+    params_model = list(p for p in model.parameters() if p.requires_grad)
+    params_hib = hib.parameters()
+    optimizer = torch.optim.AdamW([
+        {'params': params_model},
+        {'params': params_hib, 'lr': args.hib_lr}],
         lr=args.lr,
         betas=(args.beta1, args.beta2),
+        weight_decay=args.weight_decay
     )
 
     # Load pretrained checkpoint
@@ -354,7 +353,7 @@ def main(args):
             if args.distributed:
                 sampler_train.set_epoch(epoch)
             train_stats = train_one_epoch(
-                model=model,
+                model_set=model_set,
                 tokenizer=tokenizer,
                 data_loader=dataloader_train,
                 optimizer=optimizer,
@@ -396,26 +395,6 @@ def main(args):
                             },
                             checkpoint_path,
                         )
-                        json.dump(
-                            curr_val_stats,
-                            open(
-                                os.path.join(
-                                    args.save_dir,
-                                    args.dataset + "_val.json",
-                                ),
-                                "w",
-                            ),
-                        )
-                        json.dump(
-                            {"acc": best_acc, "ep": epoch},
-                            open(
-                                os.path.join(
-                                    args.save_dir,
-                                    args.dataset + "acc_val.json",
-                                ),
-                                "w",
-                            ),
-                        )
             else:
                 val_stats = {}
 
@@ -423,7 +402,6 @@ def main(args):
                 **{f"train_{k}": v for k, v in train_stats.items()},
                 **{f"val_{k}": v for k, v in val_stats.items()},
                 "epoch": epoch,
-                "n_parameters": n_parameters,
             }
 
             if args.save_dir and dist.is_main_process():
@@ -433,6 +411,7 @@ def main(args):
                 dist.save_on_master(
                     {
                         "model": model.state_dict(),
+                        "hib": hib.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "epoch": epoch,
                         "args": args,
@@ -447,7 +426,8 @@ def main(args):
         if dist.is_main_process() and args.save_dir:
             print(f"loading best checkpoint from epoch {best_epoch}")
         if args.save_dir:
-            torch.distributed.barrier()  # wait all processes
+            if args.distributed:
+                torch.distributed.barrier()  # wait all processes
             checkpoint = torch.load(
                 os.path.join(args.save_dir, f"best_model.pth"),
                 map_location="cpu",

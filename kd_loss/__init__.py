@@ -3,6 +3,7 @@ from .vanilla_kd import VanillaKD
 from .relation import RKD, R2KD
 from .decouple import Decoupled_KD
 from .feature import FKD
+from .uncertainty.nce import NceLoss
 
 
 def build_ranking_loss(args):

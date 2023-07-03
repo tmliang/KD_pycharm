@@ -1,6 +1,7 @@
 import os
 from .deberta import DebertaV2ForMaskedLM
 from transformers import DebertaV2Tokenizer
+from .hib import HedgedInstanceEmbedding
 
 TRANSFORMERS_CACHE = 'TRANSFORMERS_CACHE'
 model_name = os.path.join(TRANSFORMERS_CACHE, 'deberta-v2-xlarge')

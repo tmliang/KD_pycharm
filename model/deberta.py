@@ -28,7 +28,7 @@ from transformers.activations import ACT2FN
 from transformers.modeling_outputs import (
     # BaseModelOutput,
     ModelOutput,
-    MaskedLMOutput,
+    # MaskedLMOutput,
     QuestionAnsweringModelOutput,
     SequenceClassifierOutput,
     TokenClassifierOutput,
@@ -71,6 +71,36 @@ class BaseModelOutput(ModelOutput):
     attentions: Optional[Tuple[torch.FloatTensor]] = None
     position_embeddings: torch.FloatTensor = None
     attention_mask: torch.BoolTensor = None
+    adapter_states: Optional[Tuple[torch.FloatTensor]] = None
+
+
+class MaskedLMOutput(ModelOutput):
+    """
+    Base class for masked language models outputs.
+
+    Args:
+        loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
+            Masked language modeling (MLM) loss.
+        logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
+            Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
+            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
+
+            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
+        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+            heads.
+    """
+
+    loss: Optional[torch.FloatTensor] = None
+    logits: torch.FloatTensor = None
+    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    attentions: Optional[Tuple[torch.FloatTensor]] = None
+    adapter_states: Optional[Tuple[torch.FloatTensor]] = None
 
 
 # Copied from transformers.models.deberta.modeling_deberta.ContextPooler
@@ -327,11 +357,15 @@ class DebertaV2Output(nn.Module):
 
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
+        adapter_output = None
         if self.ds_factor:
-            hidden_states = self.adapter(hidden_states)
-        hidden_states = self.dropout(hidden_states)
+            adapter_output = self.adapter(hidden_states)
+            adapter_output = self.dropout(adapter_output)
+            hidden_states = adapter_output
+        else:
+            hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
-        return hidden_states
+        return hidden_states, adapter_output
 
 
 # Copied from transformers.models.deberta.modeling_deberta.DebertaLayer with Deberta->DebertaV2
@@ -368,11 +402,11 @@ class DebertaV2Layer(nn.Module):
         if return_att:
             attention_output, att_matrix = attention_output
         intermediate_output = self.intermediate(attention_output)
-        layer_output = self.output(intermediate_output, attention_output)
+        layer_output, adapter_output = self.output(intermediate_output, attention_output)
         if return_att:
-            return (layer_output, att_matrix)
+            return (layer_output, adapter_output, att_matrix)
         else:
-            return layer_output
+            return (layer_output, adapter_output)
 
 
 class ConvLayer(nn.Module):
@@ -523,6 +557,7 @@ class DebertaV2Encoder(nn.Module):
 
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
+        all_adapter_states = () if output_hidden_states else None
 
         if isinstance(hidden_states, Sequence):
             next_kv = hidden_states[0]
@@ -544,7 +579,12 @@ class DebertaV2Encoder(nn.Module):
                 rel_embeddings=rel_embeddings,
             )
             if output_attentions:
-                output_states, att_m = output_states
+                output_states, adapter_states, att_m = output_states
+            else:
+                output_states, adapter_states = output_states
+
+            if output_hidden_states:
+                all_adapter_states = all_adapter_states + (adapter_states,)
 
             if i == 0 and self.conv is not None:
                 output_states = self.conv(hidden_states, output_states, input_mask)
@@ -565,13 +605,14 @@ class DebertaV2Encoder(nn.Module):
         if not return_dict:
             return tuple(
                 v
-                for v in [output_states, all_hidden_states, all_attentions]
+                for v in [output_states, all_hidden_states, all_adapter_states, all_attentions]
                 if v is not None
             )
         return BaseModelOutput(
             last_hidden_state=output_states,
             hidden_states=all_hidden_states,
             attentions=all_attentions,
+            adapter_states=all_adapter_states
         )
 
 
@@ -1282,6 +1323,7 @@ class DebertaV2Model(DebertaV2PreTrainedModel):
             attentions=encoder_outputs.attentions,
             position_embeddings=position_embeddings,
             attention_mask=attention_mask,
+            adapter_states=encoder_outputs.adapter_states
         )
 
 
@@ -1403,7 +1445,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
                     relative_pos=None,
                     rel_embeddings=rel_embeddings,
                 )
-                query_states = output
+                query_states = output[0]
                 outputs.append(query_states)
         else:
             outputs = [encoder_layers[-1]]
@@ -1497,6 +1539,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
             logits=prediction_scores,
             hidden_states=modified[-1],
             attentions=outputs.attentions,
+            adapter_states=outputs.adapter_states[-1]
         )
 
 
