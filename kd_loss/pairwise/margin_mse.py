@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from kd_loss.utils import pair_minus
+# from kd_loss.utils import pair_minus
 
 
 class MarginMSE(nn.Module):
@@ -13,7 +13,7 @@ class MarginMSE(nn.Module):
         self.margin = margin
         self.mse_loss = nn.MSELoss(reduction='mean')
 
-    def forward(self, score, tgt_score):
+    def forward(self, tgt_score, score):
         # get pairwise differences
         t_diff = pair_minus(tgt_score)
         s_diff = pair_minus(score)

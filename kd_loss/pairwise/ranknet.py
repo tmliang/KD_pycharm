@@ -8,11 +8,13 @@ class RankNet(nn.Module):
     """
     Learning to rank using gradient descent. ICML, 2005.
     """
-    def __init__(self, sigma=1):
+    def __init__(self, n_pos, sigma=1):
         super().__init__()
         self.sigma = sigma
+        self.n_pos = n_pos
+        self.loss = nn.BCEWithLogitsLoss(reduction='sum')
 
-    def forward(self, score, tgt_score):
+    def forward(self, tgt_score, score):
         # get pairwise differences
         t_diff = pair_minus(tgt_score)
         s_diff = pair_minus(score)
@@ -25,7 +27,7 @@ class RankNet(nn.Module):
         score = torch.sigmoid(self.sigma * s_diff).masked_fill(~mask, 0)
         target = ((t_diff.sign() + 1) / 2).masked_fill(~mask, 0)
 
-        return F.binary_cross_entropy(input=score, target=target, reduction='sum') / tgt_score.size(0)
+        return self.loss(score, target) / tgt_score.size(0)
 
 
 # if __name__ == '__main__':

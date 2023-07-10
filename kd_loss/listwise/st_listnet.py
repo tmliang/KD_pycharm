@@ -11,7 +11,7 @@ class STListNet(nn.Module):
         super().__init__()
         self.temperature = temperature
 
-    def forward(self, score, tgt_score):
+    def forward(self, tgt_score, score):
         # stochastic scores
         unif = torch.rand(score.size(), device=score.device)
         gumbel = -torch.log(-torch.log(unif + eps) + eps)  # Sample from gumbel distribution

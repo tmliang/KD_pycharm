@@ -9,7 +9,7 @@ class ListMLE(nn.Module):
 	def __init__(self):
 		super().__init__()
 
-	def forward(self, score, tgt_score=None):
+	def forward(self, tgt_score, score):
 		"""
 		ListMLE estimates the probability of the observed ranking and attempts to maximize it.
 		"""

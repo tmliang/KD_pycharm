@@ -85,7 +85,7 @@ class RankingLoss(nn.Module):
         :return: kd_loss value, a torch.Tensor
         """
         t_score, s_score = self.sort_scores_by_teacher(gt, t_score, s_score)
-        return self.loss(score=s_score, tgt_score=t_score)
+        return self.loss(t_score, s_score)
 
     def ranking_loss(self, args):
         loss_func = args.loss1
@@ -96,14 +96,12 @@ class RankingLoss(nn.Module):
         elif loss_func == 'listmle':
             return ListMLE()
         elif loss_func == 'lambda':
-            return LambdaLoss(args.lambda_weight, args.sigma, args.temperature)
-        elif loss_func == 'lambdarank':
-            return LambdaRank(args.sigma, args.temperature)
+            return LambdaLoss(args.lambda_weight, args.sigma, args.tau, args.temperature)
         elif loss_func == 'margin_mse':
             return MarginMSE(args.margin)
         elif loss_func == 'margin_rank':
             return MarginRank(args.n_pos, args.margin)
         elif loss_func == 'ranknet':
-            return RankNet(args.sigma)
+            return RankNet(args.n_pos,  args.sigma)
         else:
             raise NotImplementedError

@@ -327,8 +327,8 @@ def get_args_parser():
     parser.add_argument(
         "--lambda_weight",
         type=str,
-        default='ranknet',
-        choices=["ndcg1", "ndcg2", "ndcg2++"],
+        default='ndcg',
+        choices=["ndcg", "ndcg1", "ndcg2", "ndcg2++"],
         help="weight scheme in lambda losses"
     )
     parser.add_argument(
@@ -337,7 +337,7 @@ def get_args_parser():
         default='listnet',
         choices=["vanilla",
                  "dkd", "stdkd", "tridkd",
-                 "listnet", "stlistnet", "listmle", "lambda", "lambdarank", "margin_mse", "margin_rank", "ranknet"
+                 "listnet", "stlistnet", "listmle", "lambda", "margin_mse", "margin_rank", "ranknet"
                  ]
     )
     parser.add_argument(
@@ -354,6 +354,11 @@ def get_args_parser():
     )
     parser.add_argument(
         "--sigma",
+        type=float,
+        default=1.
+    )
+    parser.add_argument(
+        "--tau",
         type=float,
         default=1.
     )

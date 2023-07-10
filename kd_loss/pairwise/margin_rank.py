@@ -13,7 +13,7 @@ class MarginRank(nn.Module):
         self.margin = margin
         self.margin_ranking_loss = nn.MarginRankingLoss(margin=margin, reduction='mean')
 
-    def forward(self, score, tgt_score=None):
+    def forward(self, tgt_score, score):
         # get pairwise indices
         bsz, list_len = score.size()
         target_num = int(self.n_pos * (list_len - (1 + self.n_pos) / 2))    # ignore the neg-neg pairs

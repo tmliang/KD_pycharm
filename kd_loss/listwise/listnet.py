@@ -12,7 +12,7 @@ class ListNet(nn.Module):
         super().__init__()
         self.temperature = temperature
 
-    def forward(self, score, tgt_score):
+    def forward(self, tgt_score, score):
         """
         The Top-1 approximated ListNet kd_loss, which reduces to a softmax and simple cross entropy.
         """

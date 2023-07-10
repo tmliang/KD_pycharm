@@ -8,12 +8,13 @@ class LambdaRank(nn.Module):
     """
     Learning to Rank with Nonsmooth Cost Functions. NIPS. 2006.
     """
-    def __init__(self, sigma=1, temperature=1):
+    def __init__(self, n_pos, sigma=1, temperature=1):
         super().__init__()
         self.sigma = sigma
+        self.n_pos = n_pos
         self.temperature = temperature
 
-    def forward(self, score, tgt_score):
+    def forward(self, tgt_score, score):
 
         # get pairwise differences
         t_diff = pair_minus(tgt_score)
