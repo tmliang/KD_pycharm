@@ -23,6 +23,9 @@ from kd_loss import build_ranking_loss
 from metrics.ndcg import ndcg_at_k
 from metrics.eval_metrics import mean_average_precision
 
+import nni
+
+
 logging.basicConfig(level=logging.ERROR)
 
 
@@ -72,8 +75,8 @@ def train_one_epoch(
 
         # teacher forward
         with torch.no_grad():
-            # if args.n_prompt > 0:
-            #     ema_prompt(teacher, student, beta=0.99)
+            if args.n_prompt > 0:
+                ema_prompt(teacher, student, beta=0.99)
             teacher_output = teacher(
                 video=video,
                 video_mask=video_mask,
@@ -370,149 +373,62 @@ def main(args):
     model.set_answer_embeddings(
         aid2tokid.to(model.device), freeze_last=args.freeze_last
     )  # init answer embedding module
-    if not args.eval:
-        teacher.set_answer_embeddings(aid2tokid.to(model.device))
+
+    teacher.set_answer_embeddings(aid2tokid.to(model.device))
+    if dist.is_main_process():
+        print("Start training")
+    best_acc = 0
+    for epoch in range(args.start_epoch, args.epochs):
         if dist.is_main_process():
-            print("Start training")
-        start_time = time.time()
-        best_epoch = args.start_epoch
-        best_acc = 0
-        for epoch in range(args.start_epoch, args.epochs):
-            if dist.is_main_process():
-                print(f"Starting epoch {epoch}")
-            if args.distributed:
-                sampler_train.set_epoch(epoch)
-            train_stats = train_one_epoch(
-                teacher=teacher,
-                student=model,
+            print(f"Starting epoch {epoch}")
+        if args.distributed:
+            sampler_train.set_epoch(epoch)
+        train_one_epoch(
+            teacher=teacher,
+            student=model,
+            tokenizer=tokenizer,
+            ranking_loss=ranking_loss,
+            data_loader=dataloader_train,
+            optimizer=optimizer,
+            device=device,
+            epoch=epoch,
+            dataset_name=args.dataset,
+            args=args,
+            max_norm=args.clip_max_norm,
+        )
+
+        if (epoch + 1) % args.eval_skip == 0:
+            val_stats = {}
+            print(f"Validating {args.dataset}")
+
+            curr_val_stats, out = evaluate(
+                model=model,
                 tokenizer=tokenizer,
-                ranking_loss=ranking_loss,
-                data_loader=dataloader_train,
-                optimizer=optimizer,
+                data_loader=dataloader_test,
                 device=device,
-                epoch=epoch,
                 dataset_name=args.dataset,
                 args=args,
-                max_norm=args.clip_max_norm,
+                split="val"
+            )
+            val_stats.update(
+                {args.dataset + "_" + k: v for k, v in out.items()}
             )
 
-            if (epoch + 1) % args.eval_skip == 0:
-                val_stats = {}
-                print(f"Validating {args.dataset}")
+            # nni
+            nni.report_intermediate_result(out["acc1"])
 
-                curr_val_stats, out = evaluate(
-                    model=model,
-                    tokenizer=tokenizer,
-                    data_loader=dataloader_test,
-                    device=device,
-                    dataset_name=args.dataset,
-                    args=args,
-                    split="val"
-                )
-                val_stats.update(
-                    {args.dataset + "_" + k: v for k, v in out.items()}
-                )
-                if out["acc1"] > best_acc:
-                    best_epoch = epoch
-                    best_acc = out["acc1"]
+            if out["acc1"] > best_acc:
+                best_acc = out["acc1"]
 
-                    if dist.is_main_process() and args.save_dir:
-                        checkpoint_path = os.path.join(
-                            args.save_dir, f"best_model.pth"
-                        )
-                        dist.save_on_master(
-                            {
-                                "model": model.state_dict(),
-                                "optimizer": optimizer.state_dict(),
-                                "epoch": epoch,
-                                "args": args,
-                            },
-                            checkpoint_path,
-                        )
-                        json.dump(
-                            curr_val_stats,
-                            open(
-                                os.path.join(
-                                    args.save_dir,
-                                    args.dataset + "_val.json",
-                                ),
-                                "w",
-                            ),
-                        )
-                        json.dump(
-                            {"acc": best_acc, "ep": epoch},
-                            open(
-                                os.path.join(
-                                    args.save_dir,
-                                    args.dataset + "acc_val.json",
-                                ),
-                                "w",
-                            ),
-                        )
-            else:
-                val_stats = {}
-
-            log_stats = {
-                **{f"train_{k}": v for k, v in train_stats.items()},
-                **{f"val_{k}": v for k, v in val_stats.items()},
-                "epoch": epoch,
-                "n_parameters": n_parameters,
-            }
-
-            if args.save_dir and dist.is_main_process():
-                with open(os.path.join(args.save_dir, "log.txt"), "a") as f:
-                    f.write(json.dumps(log_stats) + "\n")
-                checkpoint_path = os.path.join(args.save_dir, f"ckpt.pth")
-                dist.save_on_master(
-                    {
-                        "model": model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "epoch": epoch,
-                        "args": args,
-                    },
-                    checkpoint_path,
-                )
-
-        total_time = time.time() - start_time
-        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-        print("Training time {}".format(total_time_str))
-        # load best ckpt
-        if dist.is_main_process() and args.save_dir:
-            print(f"loading best checkpoint from epoch {best_epoch}")
-        if args.save_dir:
-            if args.distributed:
-                torch.distributed.barrier()  # wait all processes
-            checkpoint = torch.load(
-                os.path.join(args.save_dir, f"best_model.pth"),
-                map_location="cpu",
-            )
-            model.load_state_dict(checkpoint["model"], strict=False)
-
-    results, out = evaluate(
-        model=model,
-        tokenizer=tokenizer,
-        data_loader=dataloader_test,
-        device=device,
-        dataset_name=args.dataset,
-        args=args,
-        split="test"
-    )
-
-    if args.save_dir and dist.is_main_process():
-        json.dump(
-            results,
-            open(os.path.join(args.save_dir, args.dataset + ".json"), "w"),
-        )
-        json.dump(
-            out,
-            open(
-                os.path.join(args.save_dir, args.dataset + "summary.json"), "w"
-            ),
-        )
+    nni.report_final_result(best_acc)
 
 
 if __name__ == "__main__":
     args = get_args_parser()
-    if args.save_dir:
-        args.save_dir = os.path.join(args.presave_dir, args.save_dir)
+    args = vars(args)
+    args.update(nni.get_next_parameter())
+    for k, v in args.items():
+        if k[:2] == "n_":
+            args[k] = int(v)
+    args = argparse.Namespace(**args)
     main(args)

@@ -1,0 +1,21 @@
+# ranking loss
+loss1: stlistnet
+temperature: 1.
+n_pos: 10
+n_neg: 100
+neg_sampler: exp  # choices = random, exp, zipfs
+
+# feature & relation loss
+loss2: r2kd
+dist_func: mse  # choices = mse, cos, norm
+project: false
+
+# trade-off
+alpha0: 0.05
+alpha1: 10
+alpha2: 0.1
+warmup_alpha: false
+
+# ckpt
+teacher_load: ckpt/msvd/msvd_a.pth
+load: ckpt/msvd/msvd_b.pth
