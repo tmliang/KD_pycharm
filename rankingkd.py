@@ -26,12 +26,6 @@ from metrics.eval_metrics import mean_average_precision
 logging.basicConfig(level=logging.ERROR)
 
 
-def ema_prompt(teacher, student, beta=0.99):
-    t_prompt = teacher.deberta.embeddings.prompt_embedding
-    s_prompt = student.deberta.embeddings.prompt_embedding
-    t_prompt.weight.data = beta * t_prompt.weight + (1-beta) * s_prompt.weight
-
-
 def train_one_epoch(
     teacher: torch.nn.Module,
     student: torch.nn.Module,
@@ -72,8 +66,6 @@ def train_one_epoch(
 
         # teacher forward
         with torch.no_grad():
-            # if args.n_prompt > 0:
-            #     ema_prompt(teacher, student, beta=0.99)
             teacher_output = teacher(
                 video=video,
                 video_mask=video_mask,

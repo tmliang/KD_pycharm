@@ -64,28 +64,32 @@ def train_one_epoch(
             attention_mask=attention_mask,
         )
         delay = args.max_feats if args.use_video else 0
-        p2p_logits = output["logits"][:, delay: inputs.size(1) + delay][inputs == tokenizer.mask_token_id]
-        rep = output["hidden_states"][:, delay: inputs.size(1) + delay][inputs == tokenizer.mask_token_id]
-        hib_emb, gauss = model.get_hib_embeddings(rep, args.n_sample)
-        h2p_logits = model.hib_loss(hib_emb, loss=args.h2p_loss)
-        reg_loss = model.hib_loss(gauss, loss='regular')
-
+        logits = output["logits"][:, delay : encoded["input_ids"].size(1) + delay][
+            encoded["input_ids"] == tokenizer.mask_token_id
+        ]
         answer_id = batch_dict["answer_id"].to(device)
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
-            nll = -F.log_softmax(p2p_logits, 1, _stacklevel=5)
-            p2p_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
-            nll = -F.log_softmax(h2p_logits, 1, _stacklevel=5)
-            h2p_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
+            nll = -F.log_softmax(logits, 1, _stacklevel=5)
+            loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
+        elif dataset_name == "vqa":
+            a = (answer_id / 3).clamp(max=1)
+            nll = -F.log_softmax(logits, 1, _stacklevel=5)
+            loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
         else:
-            p2p_loss = F.cross_entropy(p2p_logits, answer_id)
-            h2p_loss = F.cross_entropy(h2p_logits, answer_id)
+            loss = F.cross_entropy(logits, answer_id)
 
-        loss = p2p_loss + args.alpha0 * h2p_loss + args.alpha1 * reg_loss
-        loss_dict = {"loss": loss, "p2p-loss": p2p_loss, "h2p-loss": h2p_loss, "reg_loss": reg_loss}
+        loss_dict = {"cls_loss": loss}
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = dist.reduce_dict(loss_dict)
+        loss_reduced = sum(loss_dict_reduced.values())
+        loss_value = loss_reduced.item()
+
+        if not math.isfinite(loss_value):
+            print("Loss is {}, stopping training".format(loss_value))
+            print(loss_dict_reduced)
+            sys.exit(1)
 
         optimizer.zero_grad()
         loss.backward()
@@ -100,7 +104,8 @@ def train_one_epoch(
             args=args,
         )
 
-        metric_logger.update(**loss_dict_reduced)
+        metric_logger.update(loss=loss_value, **loss_dict_reduced)
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
