@@ -1,27 +1,22 @@
 search_space:
-  alpha0:
-    _type: quniform
-    _value: [ 0, 1, 0.01 ]
-  alpha1:
-    _type: randint
-    _value: [ 5, 30 ]
-  alpha2:
-    _type: quniform
-    _value: [ 0, 0.1, 0.01 ]
-  warmup_alpha:
+  uc_at:
     _type: choice
-    _value: [true, false]
-  ft_last:
-    _type: choice
-    _value: [true, false]
-  n_pos:
+    _value: ['b', 'm', 'l']
+  uc_drop:
+    _type: uniform
+    _value: [0, 1]
+  alpha_uc:
+    _type: uniform
+    _value: [0, 1]
+  lr:
+    _type: uniform
+    _value: [0.00001, 0.0001]
+  num_sample:
     _type: randint
-    _value: [ 5, 30 ]
-  n_neg:
-    _type: quniform
-    _value: [ 0, 500, 10 ]
+    _value: [1, 100]
 
-trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msvd --batch_size=6 --batch_size_val=32
+
+trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msvd --teacher_load=ckpt/msvd/msvd_a.pth --load=ckpt/msvd/msvd_b.pth --batch_size=6 --batch_size_val=32 --loss_func=stlistnet --neg_sampler=exp
 trial_code_directory: ~/KD
 
 trialGpuNumber: 1
@@ -37,3 +32,4 @@ training_service:
   platform: local
   useActiveGpu: True
   maxTrialNumberPerGpu: 1
+  gpuIndices: 0,2,3,4,7

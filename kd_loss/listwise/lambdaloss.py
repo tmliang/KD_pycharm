@@ -35,8 +35,6 @@ class LambdaLoss(nn.Module):
 
         # mask
         mask = torch.ones_like(loss[0], dtype=torch.bool)
-        # mask[self.n_pos:, self.n_pos:] = 0
-        # mask[:self.n_pos, :self.n_pos] = 0
         if self.weight_scheme != 'ndcg1':
             mask.triu_(1)
         return -torch.sum(loss.masked_select(mask)) / loss.size(0)

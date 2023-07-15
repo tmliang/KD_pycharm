@@ -5,6 +5,8 @@ import numpy as np
 import random
 import json
 import copy
+import math
+import sys
 import argparse
 import logging
 import time
@@ -22,40 +24,29 @@ from util.metrics import MetricLogger
 from kd_loss import build_ranking_loss
 from metrics.ndcg import ndcg_at_k
 from metrics.eval_metrics import mean_average_precision
-
 import nni
 
 
-logging.basicConfig(level=logging.ERROR)
-
-
-def ema_prompt(teacher, student, beta=0.99):
-    t_prompt = teacher.deberta.embeddings.prompt_embedding
-    s_prompt = student.deberta.embeddings.prompt_embedding
-    t_prompt.weight.data = beta * t_prompt.weight + (1-beta) * s_prompt.weight
-
-
 def train_one_epoch(
-    teacher: torch.nn.Module,
-    student: torch.nn.Module,
-    tokenizer,
-    ranking_loss,
-    data_loader: Iterable,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-    epoch: int,
-    dataset_name,
-    args,
-    max_norm: float = 0,
+        teacher: torch.nn.Module,
+        student: torch.nn.Module,
+        tokenizer,
+        ranking_loss,
+        data_loader: Iterable,
+        optimizer: torch.optim.Optimizer,
+        device: torch.device,
+        epoch: int,
+        dataset_name,
+        args,
+        max_norm: float = 0,
 ):
     student.train()
     metric_logger = MetricLogger(delimiter="  ")
     header = "Epoch: [{}]".format(epoch)
     num_training_steps = int(len(data_loader) * args.epochs)
-    ct0, ct1, ct2 = ranking_loss
 
     for i_batch, batch_dict in enumerate(
-        metric_logger.log_every(data_loader, args.print_freq, header)
+            metric_logger.log_every(data_loader, args.print_freq, header)
     ):
         video = batch_dict["video"].to(device)
         video_len = batch_dict["video_len"]
@@ -72,17 +63,31 @@ def train_one_epoch(
 
         text_ids = encoded["input_ids"].to(device)
         text_mask = encoded["attention_mask"].to(device)
+        mask = text_ids == tokenizer.mask_token_id
+        delay = args.max_feats if args.use_video else 0
 
         # teacher forward
         with torch.no_grad():
-            if args.n_prompt > 0:
-                ema_prompt(teacher, student, beta=0.99)
             teacher_output = teacher(
                 video=video,
                 video_mask=video_mask,
                 input_ids=text_ids,
                 attention_mask=text_mask
             )
+            t_logits = teacher_output["logits"][:, delay:][mask]  # (B, C)
+            t_states = torch.stack(teacher_output["hidden_states"])
+            t_reps = teacher_output["last_hidden_state"][:, delay:][mask]
+
+        if args.alpha_uc > 0:
+            sample_logits = []
+            for _ in range(args.num_sample):
+                sample_logits.append(teacher.predict(t_reps, enable_dropout=args.uc_at))
+            sample_logits = torch.stack(sample_logits, dim=1)
+            std = torch.std(sample_logits, dim=1)
+            t_logits += args.alpha_uc * std
+            std = std.mean().detach()
+        else:
+            std = torch.zeros(1)
 
         # forward
         student_output = student(
@@ -91,47 +96,33 @@ def train_one_epoch(
             input_ids=text_ids,
             attention_mask=text_mask
         )
+        s_logits = student_output["logits"][:, delay:][mask]
+        s_states = torch.stack(student_output["hidden_states"])
 
-        mask = text_ids == tokenizer.mask_token_id
-        delay = args.max_feats if args.use_video else 0
-        t_logits = teacher_output["logits"][:, delay: text_ids.size(1) + delay][mask]  # (B, C)
-        s_logits = student_output["logits"][:, delay: text_ids.size(1) + delay][mask]
-        t_rep = teacher_output["hidden_states"][:, delay: text_ids.size(1) + delay][mask]
-        s_rep = student_output["hidden_states"][:, delay: text_ids.size(1) + delay][mask]
         answer_id = batch_dict["answer_id"].to(device)
 
-        ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=10)
+        # ranking loss
+        r_loss = ranking_loss(answer_id, t_logits, s_logits) + teacher.lm_predictions.lm_head.dropout_reg()
 
-        loss0, dis = ct0(t_rep, s_rep)
-        loss1 = ct1(answer_id, t_logits, s_logits)
-        loss2 = ct2(answer_id, t_logits, s_logits, dis) if args.alpha2 > 0 else 0
+        # feature loss
+        f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(r_loss)
+
+        if args.uc_mode == 'l':
+            uc_dropout = teacher.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
+        else:
+            uc_dropout = teacher.lm_predictions.lm_head.dropout.drop_prob
 
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
             nll = -F.log_softmax(s_logits, 1, _stacklevel=5)
-            cls_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
+            c_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
         else:
-            cls_loss = F.cross_entropy(s_logits, answer_id)
+            c_loss = F.cross_entropy(s_logits, answer_id)
 
-        if args.warmup_alpha:
-            curr_step = epoch * len(data_loader) + i_batch
-            num_warmup_steps = round(args.fraction_warmup_steps * num_training_steps)
-            if curr_step < num_warmup_steps:
-                gamma = float(curr_step) / float(max(1, num_warmup_steps))
-            else:
-                gamma = max(
-                    0.0,
-                    float(num_training_steps - curr_step)
-                    / float(max(1, num_training_steps - num_warmup_steps)),
-                )
-            alpha0 = args.alpha0 * gamma
-            alpha2 = args.alpha2 * gamma
-        else:
-            alpha0 = args.alpha0
-            alpha2 = args.alpha2
-
-        loss = cls_loss + alpha0 * loss0 + args.alpha1 * loss1 + alpha2 * loss2
-        loss_dict = {"loss": loss, "cls_loss": cls_loss, "loss0": loss0, "loss1": loss1, "loss2": loss2, "ndcg": ndcg}
+        loss = c_loss + args.alpha_r * r_loss + args.alpha_f * f_loss
+        ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=20)
+        loss_dict = {"loss": loss, "cls_loss": c_loss, "rank_loss": r_loss, "feat_loss": f_loss, "ndcg": ndcg,
+                     "uc_dropout": uc_dropout, "std": std}
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = dist.reduce_dict(loss_dict)
@@ -158,14 +149,14 @@ def train_one_epoch(
 
 @torch.no_grad()
 def evaluate(
-    model: torch.nn.Module,
-    tokenizer,
-    data_loader,
-    device: torch.device,
-    dataset_name,
-    args,
-    thresholds=[1, 10],
-    split="test",
+        model: torch.nn.Module,
+        tokenizer,
+        data_loader,
+        device: torch.device,
+        dataset_name,
+        args,
+        thresholds=[1, 10],
+        split="test",
 ):
     model.eval()
     metric_logger = MetricLogger(delimiter="  ")
@@ -174,7 +165,7 @@ def evaluate(
     res = {}
 
     for i_batch, batch_dict in enumerate(
-        metric_logger.log_every(data_loader, args.print_freq, header)
+            metric_logger.log_every(data_loader, args.print_freq, header)
     ):
         video = batch_dict["video"].to(device)
         video_len = batch_dict["video_len"]
@@ -191,7 +182,7 @@ def evaluate(
         input_ids = encoded["input_ids"].to(device)
         attention_mask = encoded["attention_mask"].to(device)
         if (
-            not args.suffix and not args.use_context
+                not args.suffix and not args.use_context
         ):  # remove sep token if not using the suffix
             attention_mask[input_ids == tokenizer.sep_token_id] = 0
             input_ids[input_ids == tokenizer.sep_token_id] = tokenizer.pad_token_id
@@ -202,16 +193,23 @@ def evaluate(
             input_ids=input_ids,
             attention_mask=attention_mask,
         )
+        mask = input_ids == tokenizer.mask_token_id
+        delay = args.max_feats if args.use_video else 0
 
+        reps = output["last_hidden_state"][:, delay:][mask]
         logits = output["logits"]
         delay = args.max_feats if args.use_video else 0
-        logits = logits[:, delay: encoded["input_ids"].size(1) + delay][
-            encoded["input_ids"] == tokenizer.mask_token_id
-        ]  # get the prediction on the mask token
+        logits = logits[:, delay:][mask]
+
         logits = logits.softmax(-1)
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
+        types = batch_dict["type"]
+        if "sub" in batch_dict:
+            subs = batch_dict["sub"]
+        else:
+            subs = [0] * len(types)
         if dataset_name == "ivqa":
             answer_id = (answer_id / 2).clamp(max=1)
             answer_id_expanded = answer_id.to(device)
@@ -231,7 +229,7 @@ def evaluate(
                 agreeings[x] = topk_aids[:, :x] == answer_id_expanded[:, :x]
 
         for i, (qid, gt, pred) in enumerate(
-            zip(qids, answer_id, topk_aids)
+                zip(qids, answer_id, topk_aids)
         ):
             res[qid] = {
                 "pred": pred.tolist(),
@@ -281,7 +279,7 @@ def main(args):
 
     # Build dataset
     tokenizer = get_tokenizer(args)
-    
+
     dataset_test = build_videoqa_dataset(
         args.dataset,
         "test",
@@ -321,21 +319,9 @@ def main(args):
     args.n_ans = len(dataloader_test.dataset.a2id)
     model = build_model(args)
     model.to(device)
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    if dist.is_main_process():
-        print("number of params:", n_parameters)
 
     # setting loss
     ranking_loss = build_ranking_loss(args)
-
-    # Set up optimizer
-    params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
-    if args.project:
-        params_for_optimization += list(p for p in ranking_loss[0].projector.parameters())
-    optimizer = torch.optim.Adam(
-        params_for_optimization,
-        lr=args.lr
-    )
 
     # load teacher
     teacher = None
@@ -346,6 +332,16 @@ def main(args):
         checkpoint = torch.load(args.teacher_load, map_location="cpu")
         teacher.load_state_dict(checkpoint["model"], strict=False)
         teacher.eval()
+        if args.alpha_uc > 0:
+            teacher.lm_predictions.lm_head.dropout.train()
+            model.lm_predictions.lm_head.dropout = teacher.lm_predictions.lm_head.dropout
+
+    # Set up optimizer
+    params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
+    optimizer = torch.optim.Adam(
+        params_for_optimization,
+        lr=args.lr
+    )
 
     # load student
     if args.load:
@@ -373,62 +369,56 @@ def main(args):
     model.set_answer_embeddings(
         aid2tokid.to(model.device), freeze_last=args.freeze_last
     )  # init answer embedding module
-
-    teacher.set_answer_embeddings(aid2tokid.to(model.device))
-    if dist.is_main_process():
-        print("Start training")
-    best_acc = 0
-    for epoch in range(args.start_epoch, args.epochs):
+    if not args.eval:
+        teacher.set_answer_embeddings(aid2tokid.to(model.device))
         if dist.is_main_process():
-            print(f"Starting epoch {epoch}")
-        if args.distributed:
-            sampler_train.set_epoch(epoch)
-        train_one_epoch(
-            teacher=teacher,
-            student=model,
-            tokenizer=tokenizer,
-            ranking_loss=ranking_loss,
-            data_loader=dataloader_train,
-            optimizer=optimizer,
-            device=device,
-            epoch=epoch,
-            dataset_name=args.dataset,
-            args=args,
-            max_norm=args.clip_max_norm,
-        )
-
-        if (epoch + 1) % args.eval_skip == 0:
-            val_stats = {}
-            print(f"Validating {args.dataset}")
-
-            curr_val_stats, out = evaluate(
-                model=model,
+            print("Start training")
+        best_acc = 0
+        for epoch in range(args.start_epoch, args.epochs):
+            if dist.is_main_process():
+                print(f"Starting epoch {epoch}")
+            if args.distributed:
+                sampler_train.set_epoch(epoch)
+            train_one_epoch(
+                teacher=teacher,
+                student=model,
                 tokenizer=tokenizer,
-                data_loader=dataloader_test,
+                ranking_loss=ranking_loss,
+                data_loader=dataloader_train,
+                optimizer=optimizer,
                 device=device,
+                epoch=epoch,
                 dataset_name=args.dataset,
                 args=args,
-                split="val"
-            )
-            val_stats.update(
-                {args.dataset + "_" + k: v for k, v in out.items()}
+                max_norm=args.clip_max_norm,
             )
 
-            # nni
-            nni.report_intermediate_result(out["acc1"])
+            if (epoch + 1) % args.eval_skip == 0:
+                val_stats = {}
+                print(f"Validating {args.dataset}")
 
-            if out["acc1"] > best_acc:
-                best_acc = out["acc1"]
-
-    nni.report_final_result(best_acc)
+                curr_val_stats, out = evaluate(
+                    model=model,
+                    tokenizer=tokenizer,
+                    data_loader=dataloader_test,
+                    device=device,
+                    dataset_name=args.dataset,
+                    args=args,
+                    split="val"
+                )
+                val_stats.update(
+                    {args.dataset + "_" + k: v for k, v in out.items()}
+                )
+                if out["acc1"] > best_acc:
+                    best_acc = out["acc1"]
+                nni.report_intermediate_result(out["acc1"])
+        nni.report_final_result(best_acc)
 
 
 if __name__ == "__main__":
-    args = get_args_parser()
+    parser = argparse.ArgumentParser(parents=[get_args_parser()])
+    args = parser.parse_args()
     args = vars(args)
     args.update(nni.get_next_parameter())
-    for k, v in args.items():
-        if k[:2] == "n_":
-            args[k] = int(v)
     args = argparse.Namespace(**args)
     main(args)

@@ -15,6 +15,8 @@ def build_model(args):
         dropout=args.dropout,
         n_ans=args.n_ans,
         freeze_last=args.freeze_last,
+        uc_dropout=args.uc_drop,
+        uc_mode=args.uc_mode,
         pretrained_model_name_or_path=model_name,
         local_files_only=True,
     )

@@ -88,7 +88,7 @@ class RankingLoss(nn.Module):
         return self.loss(t_score, s_score)
 
     def ranking_loss(self, args):
-        loss_func = args.loss1
+        loss_func = args.loss_func
         if loss_func == 'listnet':
             return ListNet(args.temperature)
         elif loss_func == 'stlistnet':

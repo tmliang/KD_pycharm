@@ -6,17 +6,9 @@ from .feature import FKD
 
 
 def build_ranking_loss(args):
-    loss0 = FKD(args)
-    loss0.to(args.device)
-    if args.loss1 == "vanilla":
-        loss1 = VanillaKD(args.temperature)
-    elif "dkd" in args.loss1:
-        loss1 = Decoupled_KD()
+    if args.loss_func == "vanilla":
+        return VanillaKD(args.temperature)
+    elif "dkd" in args.loss_func:
+        return Decoupled_KD()
     else:
-        loss1 = RankingLoss(args)
-
-    if args.loss2 == "rkd":
-        loss2 = RKD()
-    else:
-        loss2 = R2KD(args)
-    return loss0, loss1, loss2
+        return RankingLoss(args)

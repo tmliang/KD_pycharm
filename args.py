@@ -332,25 +332,13 @@ def get_args_parser():
         help="weight scheme in lambda losses"
     )
     parser.add_argument(
-        "--loss1",
+        "--loss_func",
         type=str,
         default='listnet',
         choices=["vanilla",
                  "dkd", "stdkd", "tridkd",
                  "listnet", "stlistnet", "listmle", "lambda", "margin_mse", "margin_rank", "ranknet"
                  ]
-    )
-    parser.add_argument(
-        "--loss2",
-        type=str,
-        default='r2kd',
-        choices=["rkd", "r2kd"]
-    )
-    parser.add_argument(
-        "--dist_func",
-        type=str,
-        default='mse',
-        choices=["mse", "cos", "norm"]
     )
     parser.add_argument(
         "--sigma",
@@ -374,14 +362,20 @@ def get_args_parser():
         default=1.
     )
     parser.add_argument(
-        "--warmup_alpha",
-        action="store_true"
+        "--uc_mode",
+        type=str,
+        default="",
+        help="'l': learnable dropout, 'b': BNN, 'v': VAE."
     )
+    parser.add_argument("--uc_drop", type=float, default=0)
+    parser.add_argument("--num_sample", type=int, default=10)
+    parser.add_argument("--alpha_r", default=10, type=float)
+    parser.add_argument("--alpha_f", default=0, type=float)
+    parser.add_argument("--alpha_uc", default=0, type=float, help="weight of standard bias")
     parser.add_argument(
-        "--project",
-        action="store_true"
+        "--uc_at",
+        type=str,
+        default='m',
+        help="'b': before, 'm': middle, 'l': last"
     )
-    parser.add_argument("--alpha0", default=0, type=float)
-    parser.add_argument("--alpha1", default=0, type=float)
-    parser.add_argument("--alpha2", default=0, type=float)
     return parser
