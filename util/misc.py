@@ -78,3 +78,29 @@ def adjust_learning_rate(
         gamma = 1
 
     optimizer.param_groups[0]["lr"] = args.lr * gamma
+
+
+def adjust_dropout(
+    min_p,
+    max_p,
+    warmup_fraction,
+    curr_step: int,
+    num_training_steps: int,
+    args,
+):
+    num_warmup_steps: int = round(warmup_fraction * num_training_steps)
+    if args.dropout_schedule == "linear_with_warmup" or args.dropout_schedule == "cosine_annealing_with_warmup":
+        if curr_step < num_warmup_steps:
+            gamma = float(curr_step) / float(max(1, num_warmup_steps))
+        else:
+            total = float(max(1, num_training_steps - num_warmup_steps))
+            if args.dropout_schedule == "linear_with_warmup":
+                gamma = float(num_training_steps - curr_step) / total
+            else:
+                gamma = 0.5 * (1. + np.cos(np.pi * float(curr_step - num_warmup_steps) / total))
+            gamma = max(0.0, gamma)
+    elif args.dropout_schedule == "random":
+        gamma = random.random()
+    else:  # constant
+        gamma = 1
+    return min_p + (max_p - min_p) * gamma

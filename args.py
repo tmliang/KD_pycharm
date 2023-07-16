@@ -373,4 +373,12 @@ def get_args_parser():
     parser.add_argument("--alpha_f", default=0, type=float)
     parser.add_argument("--alpha_uc", default=0, type=float, help="weight of standard bias")
     parser.add_argument("--uc_eval", action="store_true")
+
+    parser.add_argument("--dropout_schedule",
+        default="linear_with_warmup",
+        choices=["", "linear_with_warmup", "cosine_annealing_with_warmup", "random"]
+    )
+    parser.add_argument("--min_drop", type=float, default=0)
+    parser.add_argument("--max_drop", type=float, default=0.5)
+    parser.add_argument("--drop_warmup_fraction", type=float, default=0.5)
     return parser

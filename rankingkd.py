@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from datasets import build_videoqa_dataset, videoqa_collate_fn
 from model import build_model, get_tokenizer
 from args import get_args_parser
-from util.misc import get_mask, adjust_learning_rate
+from util.misc import get_mask, adjust_learning_rate, adjust_dropout
 from util.metrics import MetricLogger
 from kd_loss import build_ranking_loss
 from metrics.ndcg import ndcg_at_k
@@ -86,9 +86,24 @@ def train_one_epoch(
         # s_states = torch.stack(student_output["hidden_states"])
         s_reps = student_output["last_hidden_state"][:, delay:][mask]
 
+        # uncertain
+        curr_step = epoch * len(data_loader) + i_batch
+        if args.uc_mode == 'l':
+            uc_dropout = student.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
+        else:
+            uc_dropout = adjust_dropout(
+                min_p=args.min_drop,
+                max_p=args.max_drop,
+                warmup_fraction=args.drop_warmup_fraction,
+                curr_step=curr_step,
+                num_training_steps=num_training_steps,
+                args=args,
+            )
+            student.lm_predictions.lm_head.dropout.drop_prob = uc_dropout
+
         if args.alpha_uc > 0:
             sample_logits = []
-            for _ in range(args.num_sample):
+            for _ in range(random.randint(2, args.num_sample)):
                 sample_logits.append(student.predict(s_reps, enable_dropout=True))
             sample_logits = torch.stack(sample_logits, dim=1)
             std = torch.std(sample_logits, dim=1)
@@ -104,11 +119,6 @@ def train_one_epoch(
 
         # feature loss
         # f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(r_loss)
-
-        if args.uc_mode == 'l':
-            uc_dropout = student.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
-        else:
-            uc_dropout = student.lm_predictions.lm_head.dropout.drop_prob
 
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
@@ -134,7 +144,7 @@ def train_one_epoch(
 
         adjust_learning_rate(
             optimizer,
-            curr_step=epoch * len(data_loader) + i_batch,
+            curr_step=curr_step,
             num_training_steps=num_training_steps,
             args=args,
         )
