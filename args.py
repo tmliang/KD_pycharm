@@ -372,10 +372,5 @@ def get_args_parser():
     parser.add_argument("--alpha_r", default=10, type=float)
     parser.add_argument("--alpha_f", default=0, type=float)
     parser.add_argument("--alpha_uc", default=0, type=float, help="weight of standard bias")
-    parser.add_argument(
-        "--uc_at",
-        type=str,
-        default='m',
-        help="'b': before, 'm': middle, 'l': last"
-    )
+    parser.add_argument("--uc_eval", action="store_true")
     return parser

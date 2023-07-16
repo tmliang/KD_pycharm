@@ -1537,30 +1537,23 @@ class DebertaV2LMPredictionHead(nn.Module):
         self.dropout = ConcreteDropout(dropout) if dropout_learnable else StableDropout(dropout)
 
     def forward(self, hidden_states, embedding_weight, bias, enable_dropout):
-        if enable_dropout == 'b':
+        if enable_dropout:
             hidden_states = self.dropout(hidden_states)
         hidden_states = self.dense(hidden_states)
         hidden_states = self.transform_act_fn(hidden_states)
-        if enable_dropout == 'm':
-            hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states)
-        if enable_dropout == 'l':
-            hidden_states = self.dropout(hidden_states)
         if bias is not None:
             logits = (
                 torch.matmul(hidden_states, embedding_weight.t().to(hidden_states))
                 + bias
             )
         else:
-            logits = (
-                torch.matmul(hidden_states, embedding_weight.t().to(hidden_states))
-                + self.bias
-            )
+            logits = torch.matmul(hidden_states, embedding_weight.t().to(hidden_states))
         return logits
 
     def dropout_reg(self, weight_decay=1e-6):
         if self.dropout_learnable:
-            return weight_decay * self.dense.out_features * self.dropout.bce()
+            return weight_decay * self.dense.in_features * self.dropout.bce()
         else:
             return 0
 

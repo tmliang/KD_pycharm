@@ -1,19 +1,16 @@
 search_space:
-  uc_at:
-    _type: choice
-    _value: ['b', 'm', 'l']
-  uc_drop:
-    _type: uniform
-    _value: [0, 1]
-  alpha_uc:
-    _type: uniform
-    _value: [0, 1]
-  lr:
-    _type: uniform
-    _value: [0.00001, 0.0001]
-  num_sample:
-    _type: randint
-    _value: [1, 100]
+#  uc_drop:
+#    _type: uniform
+#    _value: [0, 1]
+#  alpha_uc:
+#    _type: uniform
+#    _value: [0, 1]
+#  num_sample:
+#    _type: randint
+#    _value: [1, 100]
+  clip_max_norm:
+      _type: choice
+      _value: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 5, 10]
 
 
 trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msvd --teacher_load=ckpt/msvd/msvd_a.pth --load=ckpt/msvd/msvd_b.pth --batch_size=6 --batch_size_val=32 --loss_func=stlistnet --neg_sampler=exp
@@ -32,4 +29,4 @@ training_service:
   platform: local
   useActiveGpu: True
   maxTrialNumberPerGpu: 1
-  gpuIndices: 0,2,3,4,7
+  gpuIndices: 2,3,4,7

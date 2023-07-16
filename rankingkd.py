@@ -8,7 +8,6 @@ import copy
 import math
 import sys
 import argparse
-import logging
 import time
 import datetime
 from util import dist
@@ -74,19 +73,7 @@ def train_one_epoch(
                 attention_mask=text_mask
             )
             t_logits = teacher_output["logits"][:, delay:][mask]  # (B, C)
-            t_states = torch.stack(teacher_output["hidden_states"])
-            t_reps = teacher_output["last_hidden_state"][:, delay:][mask]
-
-        if args.alpha_uc > 0:
-            sample_logits = []
-            for _ in range(args.num_sample):
-                sample_logits.append(teacher.predict(t_reps, enable_dropout=args.uc_at))
-            sample_logits = torch.stack(sample_logits, dim=1)
-            std = torch.std(sample_logits, dim=1)
-            t_logits += args.alpha_uc * std
-            std = std.mean().detach()
-        else:
-            std = torch.zeros(1)
+            # t_states = torch.stack(teacher_output["hidden_states"])
 
         # forward
         student_output = student(
@@ -96,20 +83,32 @@ def train_one_epoch(
             attention_mask=text_mask
         )
         s_logits = student_output["logits"][:, delay:][mask]
-        s_states = torch.stack(student_output["hidden_states"])
+        # s_states = torch.stack(student_output["hidden_states"])
+        s_reps = student_output["last_hidden_state"][:, delay:][mask]
+
+        if args.alpha_uc > 0:
+            sample_logits = []
+            for _ in range(args.num_sample):
+                sample_logits.append(student.predict(s_reps, enable_dropout=True))
+            sample_logits = torch.stack(sample_logits, dim=1)
+            std = torch.std(sample_logits, dim=1)
+            s_logits += args.alpha_uc * std
+            std = std.mean().detach()
+        else:
+            std = torch.zeros(1)
 
         answer_id = batch_dict["answer_id"].to(device)
 
         # ranking loss
-        r_loss = ranking_loss(answer_id, t_logits, s_logits) + teacher.lm_predictions.lm_head.dropout_reg()
+        r_loss = ranking_loss(answer_id, t_logits, s_logits) + student.lm_predictions.lm_head.dropout_reg()
 
         # feature loss
-        f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(r_loss)
+        # f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(r_loss)
 
         if args.uc_mode == 'l':
-            uc_dropout = teacher.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
+            uc_dropout = student.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
         else:
-            uc_dropout = teacher.lm_predictions.lm_head.dropout.drop_prob
+            uc_dropout = student.lm_predictions.lm_head.dropout.drop_prob
 
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
@@ -118,9 +117,10 @@ def train_one_epoch(
         else:
             c_loss = F.cross_entropy(s_logits, answer_id)
 
-        loss = c_loss + args.alpha_r * r_loss + args.alpha_f * f_loss
+        # loss = c_loss + args.alpha_r * r_loss + args.alpha_f * f_loss
+        loss = c_loss + args.alpha_r * r_loss
         ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=20)
-        loss_dict = {"loss": loss, "cls_loss": c_loss, "rank_loss": r_loss, "feat_loss": f_loss, "ndcg": ndcg,
+        loss_dict = {"loss": loss, "cls_loss": c_loss, "rank_loss": r_loss, "ndcg": ndcg,
                      "uc_dropout": uc_dropout, "std": std}
 
         # reduce losses over all GPUs for logging purposes
@@ -158,6 +158,8 @@ def evaluate(
         split="test",
 ):
     model.eval()
+    if args.uc_eval:
+        model.lm_predictions.lm_head.dropout.train()
     metric_logger = MetricLogger(delimiter="  ")
     header = f"{split}:"
 
@@ -195,20 +197,21 @@ def evaluate(
         mask = input_ids == tokenizer.mask_token_id
         delay = args.max_feats if args.use_video else 0
 
+        logits = output["logits"][:, delay:][mask]
         reps = output["last_hidden_state"][:, delay:][mask]
-        logits = output["logits"]
-        delay = args.max_feats if args.use_video else 0
-        logits = logits[:, delay:][mask]
+
+        if args.uc_eval:
+            sample_logits = []
+            for _ in range(args.num_sample):
+                sample_logits.append(model.predict(reps, enable_dropout=True))
+            sample_logits = torch.stack(sample_logits, dim=1)
+            std = torch.std(sample_logits, dim=1)
+            logits += args.alpha_uc * std
 
         logits = logits.softmax(-1)
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
-        types = batch_dict["type"]
-        if "sub" in batch_dict:
-            subs = batch_dict["sub"]
-        else:
-            subs = [0] * len(types)
         if dataset_name == "ivqa":
             answer_id = (answer_id / 2).clamp(max=1)
             answer_id_expanded = answer_id.to(device)
@@ -331,9 +334,6 @@ def main(args):
         checkpoint = torch.load(args.teacher_load, map_location="cpu")
         teacher.load_state_dict(checkpoint["model"], strict=False)
         teacher.eval()
-        if args.alpha_uc > 0:
-            teacher.lm_predictions.lm_head.dropout.train()
-            model.lm_predictions.lm_head.dropout = teacher.lm_predictions.lm_head.dropout
 
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
@@ -427,26 +427,6 @@ def main(args):
                             },
                             checkpoint_path,
                         )
-                        json.dump(
-                            curr_val_stats,
-                            open(
-                                os.path.join(
-                                    args.save_dir,
-                                    args.dataset + "_val.json",
-                                ),
-                                "w",
-                            ),
-                        )
-                        json.dump(
-                            {"acc": best_acc, "ep": epoch},
-                            open(
-                                os.path.join(
-                                    args.save_dir,
-                                    args.dataset + "acc_val.json",
-                                ),
-                                "w",
-                            ),
-                        )
             else:
                 val_stats = {}
 
@@ -459,16 +439,6 @@ def main(args):
             if args.save_dir and dist.is_main_process():
                 with open(os.path.join(args.save_dir, "log.txt"), "a") as f:
                     f.write(json.dumps(log_stats) + "\n")
-                checkpoint_path = os.path.join(args.save_dir, f"ckpt.pth")
-                dist.save_on_master(
-                    {
-                        "model": model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "epoch": epoch,
-                        "args": args,
-                    },
-                    checkpoint_path,
-                )
 
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -485,7 +455,7 @@ def main(args):
             )
             model.load_state_dict(checkpoint["model"], strict=False)
 
-    results, out = evaluate(
+    evaluate(
         model=model,
         tokenizer=tokenizer,
         data_loader=dataloader_test,
@@ -494,18 +464,6 @@ def main(args):
         args=args,
         split="test"
     )
-
-    if args.save_dir and dist.is_main_process():
-        json.dump(
-            results,
-            open(os.path.join(args.save_dir, args.dataset + ".json"), "w"),
-        )
-        json.dump(
-            out,
-            open(
-                os.path.join(args.save_dir, args.dataset + "summary.json"), "w"
-            ),
-        )
 
 
 if __name__ == "__main__":
