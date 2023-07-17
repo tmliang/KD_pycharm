@@ -104,3 +104,17 @@ def adjust_dropout(
     else:  # constant
         gamma = 1
     return min_p + (max_p - min_p) * gamma
+
+
+def step_dropout(
+    min_p,
+    max_p,
+    curr_epoch,
+    num_epoch,
+    ascending=True
+):
+    part = (max_p - min_p) * curr_epoch / num_epoch
+    if ascending:
+        return min_p + part
+    else:
+        return max_p - part

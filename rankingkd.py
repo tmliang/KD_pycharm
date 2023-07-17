@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from datasets import build_videoqa_dataset, videoqa_collate_fn
 from model import build_model, get_tokenizer
 from args import get_args_parser
-from util.misc import get_mask, adjust_learning_rate, adjust_dropout
+from util.misc import get_mask, adjust_learning_rate, adjust_dropout, step_dropout
 from util.metrics import MetricLogger
 from kd_loss import build_ranking_loss
 from metrics.ndcg import ndcg_at_k
@@ -91,14 +91,23 @@ def train_one_epoch(
         if args.uc_mode == 'l':
             uc_dropout = student.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
         else:
-            uc_dropout = adjust_dropout(
-                min_p=args.min_drop,
-                max_p=args.max_drop,
-                warmup_fraction=args.drop_warmup_fraction,
-                curr_step=curr_step,
-                num_training_steps=num_training_steps,
-                args=args,
-            )
+            if "step" in args.dropout_schedule:
+                uc_dropout = step_dropout(
+                    min_p=args.min_drop,
+                    max_p=args.max_drop,
+                    curr_epoch=epoch,
+                    num_epoch=args.epochs,
+                    ascending=(args.dropout_schedule == "step_up")
+                )
+            else:
+                uc_dropout = adjust_dropout(
+                    min_p=args.min_drop,
+                    max_p=args.max_drop,
+                    warmup_fraction=args.drop_warmup_fraction,
+                    curr_step=curr_step,
+                    num_training_steps=num_training_steps,
+                    args=args,
+                )
             student.lm_predictions.lm_head.dropout.drop_prob = uc_dropout
 
         if args.alpha_uc > 0:

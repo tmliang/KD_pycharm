@@ -376,7 +376,7 @@ def get_args_parser():
 
     parser.add_argument("--dropout_schedule",
         default="linear_with_warmup",
-        choices=["", "linear_with_warmup", "cosine_annealing_with_warmup", "random"]
+        choices=["", "linear_with_warmup", "cosine_annealing_with_warmup", "random", "step_up", "step_down"]
     )
     parser.add_argument("--min_drop", type=float, default=0)
     parser.add_argument("--max_drop", type=float, default=0.5)
