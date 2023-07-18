@@ -38,6 +38,7 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers import DebertaV2Config
 
 from .learnable_dropout import ConcreteDropout
+from .bnn import BayesianMask
 
 
 _CONFIG_FOR_DOC = "DebertaV2Config"
@@ -75,6 +76,7 @@ class BaseModelOutput(ModelOutput):
     position_embeddings: torch.FloatTensor = None
     attention_mask: torch.BoolTensor = None
     logits: Optional[torch.FloatTensor] = None
+    adapter_states: Optional[Tuple[torch.FloatTensor]] = None
 
 
 # Copied from transformers.models.deberta.modeling_deberta.ContextPooler
@@ -331,11 +333,13 @@ class DebertaV2Output(nn.Module):
 
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
+        adapter_output = None
         if self.ds_factor:
-            hidden_states = self.adapter(hidden_states)
+            adapter_output = self.adapter(hidden_states)
+            hidden_states = adapter_output
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
-        return hidden_states
+        return hidden_states, adapter_output
 
 
 # Copied from transformers.models.deberta.modeling_deberta.DebertaLayer with Deberta->DebertaV2
@@ -372,11 +376,11 @@ class DebertaV2Layer(nn.Module):
         if return_att:
             attention_output, att_matrix = attention_output
         intermediate_output = self.intermediate(attention_output)
-        layer_output = self.output(intermediate_output, attention_output)
+        layer_output, adapter_output = self.output(intermediate_output, attention_output)
         if return_att:
-            return (layer_output, att_matrix)
+            return (layer_output, att_matrix, adapter_output)
         else:
-            return layer_output
+            return layer_output, adapter_output
 
 
 class ConvLayer(nn.Module):
@@ -513,6 +517,7 @@ class DebertaV2Encoder(nn.Module):
         hidden_states,
         attention_mask,
         output_hidden_states=True,
+        output_adapter_states=True,
         output_attentions=False,
         query_states=None,
         relative_pos=None,
@@ -527,6 +532,7 @@ class DebertaV2Encoder(nn.Module):
 
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
+        all_adapter_states = () if output_adapter_states else None
 
         if isinstance(hidden_states, Sequence):
             next_kv = hidden_states[0]
@@ -548,7 +554,12 @@ class DebertaV2Encoder(nn.Module):
                 rel_embeddings=rel_embeddings,
             )
             if output_attentions:
-                output_states, att_m = output_states
+                output_states, att_m, adapter_output = output_states
+            else:
+                output_states, adapter_output = output_states
+
+            if output_adapter_states:
+                all_adapter_states = all_adapter_states + (adapter_output,)
 
             if i == 0 and self.conv is not None:
                 output_states = self.conv(hidden_states, output_states, input_mask)
@@ -576,6 +587,7 @@ class DebertaV2Encoder(nn.Module):
             last_hidden_state=output_states,
             hidden_states=all_hidden_states,
             attentions=all_attentions,
+            adapter_states=all_adapter_states
         )
 
 
@@ -1248,10 +1260,11 @@ class DebertaV2Model(DebertaV2PreTrainedModel):
             embedding_output,
             attention_mask,
             output_hidden_states=True,
+            output_adapter_states=True,
             output_attentions=output_attentions,
             return_dict=return_dict,
         )
-        encoded_layers = encoder_outputs[1]
+        encoded_layers = encoder_outputs.hidden_states
 
         if self.z_steps > 1:
             hidden_states = encoded_layers[-2]
@@ -1280,12 +1293,11 @@ class DebertaV2Model(DebertaV2PreTrainedModel):
 
         return BaseModelOutput(
             last_hidden_state=sequence_output,
-            hidden_states=encoder_outputs.hidden_states
-            if output_hidden_states
-            else None,
+            hidden_states=encoder_outputs.hidden_states if output_hidden_states else None,
             attentions=encoder_outputs.attentions,
             position_embeddings=position_embeddings,
             attention_mask=attention_mask,
+            adapter_states=encoder_outputs.adapter_states
         )
 
 
@@ -1333,7 +1345,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
             ft_ln,
             dropout,
         )
-        self.lm_predictions = DebertaV2OnlyMLMHead(config, uc_dropout, uc_mode == 'l')
+        self.lm_predictions = DebertaV2OnlyMLMHead(config, uc_dropout, uc_mode)
         self.features_dim = features_dim
         if freeze_mlm:
             for n, p in self.lm_predictions.named_parameters():
@@ -1411,7 +1423,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
                     relative_pos=None,
                     rel_embeddings=rel_embeddings,
                 )
-                query_states = output
+                query_states = output[0]
                 outputs.append(query_states)
         else:
             outputs = [encoder_layers[-1]]
@@ -1505,6 +1517,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
             last_hidden_state=modified[-1],
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            adapter_states=outputs.adapter_states
         )
 
     def predict(self, feat, enable_dropout):
@@ -1513,7 +1526,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
 
 # copied from transformers.models.bert.BertLMPredictionHead with bert -> deberta
 class DebertaV2LMPredictionHead(nn.Module):
-    def __init__(self, config, dropout=0.1, dropout_learnable=True):
+    def __init__(self, config, dropout=0.1, uc_mode=None):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         if isinstance(config.hidden_act, str):
@@ -1533,8 +1546,13 @@ class DebertaV2LMPredictionHead(nn.Module):
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
         self.decoder.bias = self.bias  # only for compatiblity
 
-        self.dropout_learnable = dropout_learnable
-        self.dropout = ConcreteDropout(dropout) if dropout_learnable else StableDropout(dropout)
+        self.uc_mode = uc_mode
+        if uc_mode == 'l':
+            self.dropout = ConcreteDropout(dropout)
+        elif uc_mode == 'b':
+            self.dropout = BayesianMask(config.hidden_size, mu=dropout)
+        else:
+            self.dropout = StableDropout(dropout)
 
     def forward(self, hidden_states, embedding_weight, bias, enable_dropout):
         if enable_dropout:
@@ -1552,18 +1570,18 @@ class DebertaV2LMPredictionHead(nn.Module):
         return logits
 
     def dropout_reg(self, weight_decay=1e-6):
-        if self.dropout_learnable:
-            return weight_decay * self.dense.in_features * self.dropout.bce()
+        if self.uc_mode:
+            return weight_decay * self.dropout.reg()
         else:
             return 0
 
 
 # copied from transformers.models.bert.BertOnlyMLMHead with bert -> deberta
 class DebertaV2OnlyMLMHead(nn.Module):
-    def __init__(self, config, dropout=0.1, dropout_learnable=False):
+    def __init__(self, config, dropout=0.1, uc_mode=None):
         super().__init__()
         # self.predictions = DebertaV2LMPredictionHead(config)
-        self.lm_head = DebertaV2LMPredictionHead(config, dropout, dropout_learnable)
+        self.lm_head = DebertaV2LMPredictionHead(config, dropout, uc_mode)
 
     def forward(self, sequence_output, embedding_weight, bias=None, enable_dropout=False):
         prediction_scores = self.lm_head(sequence_output, embedding_weight, bias, enable_dropout)
