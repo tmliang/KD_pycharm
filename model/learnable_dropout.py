@@ -16,10 +16,10 @@ class ConcreteDropout(nn.Module):
         u = torch.rand_like(x)
         drop_prob = (self.log_p + torch.log(u + eps) - torch.log(1 - u + eps))
         drop_prob = torch.sigmoid(drop_prob / temperature)
-        scale = torch.sigmoid(self.log_p)
+        scale = torch.sigmoid(self.log_p).detach()
         x = x * (1-drop_prob) / (1-scale)
         return x
 
-    def bce(self):
+    def reg(self):
         p = torch.sigmoid(self.log_p)
         return -(p * torch.log(p) + (1 - p) * torch.log(1 - p))

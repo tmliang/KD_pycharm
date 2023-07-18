@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from datasets import build_videoqa_dataset, videoqa_collate_fn
 from model import build_model, get_tokenizer
 from args import get_args_parser
-from util.misc import get_mask, adjust_learning_rate, adjust_dropout, step_dropout
+from util.misc import get_mask, adjust_learning_rate
 from util.metrics import MetricLogger
 from kd_loss import build_ranking_loss
 from metrics.ndcg import ndcg_at_k
@@ -73,7 +73,7 @@ def train_one_epoch(
                 attention_mask=text_mask
             )
             t_logits = teacher_output["logits"][:, delay:][mask]  # (B, C)
-            # t_states = torch.stack(teacher_output["hidden_states"])
+            t_states = torch.stack(teacher_output["adapter_states"])
 
         # forward
         student_output = student(
@@ -83,32 +83,8 @@ def train_one_epoch(
             attention_mask=text_mask
         )
         s_logits = student_output["logits"][:, delay:][mask]
-        # s_states = torch.stack(student_output["hidden_states"])
+        s_states = torch.stack(student_output["adapter_states"])
         s_reps = student_output["last_hidden_state"][:, delay:][mask]
-
-        # uncertain
-        curr_step = epoch * len(data_loader) + i_batch
-        if args.uc_mode == 'l':
-            uc_dropout = student.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
-        else:
-            if "step" in args.dropout_schedule:
-                uc_dropout = step_dropout(
-                    min_p=args.min_drop,
-                    max_p=args.max_drop,
-                    curr_epoch=epoch,
-                    num_epoch=args.epochs,
-                    ascending=(args.dropout_schedule == "step_up")
-                )
-            else:
-                uc_dropout = adjust_dropout(
-                    min_p=args.min_drop,
-                    max_p=args.max_drop,
-                    warmup_fraction=args.drop_warmup_fraction,
-                    curr_step=curr_step,
-                    num_training_steps=num_training_steps,
-                    args=args,
-                )
-            student.lm_predictions.lm_head.dropout.drop_prob = uc_dropout
 
         if args.alpha_uc > 0:
             sample_logits = []
@@ -127,7 +103,13 @@ def train_one_epoch(
         r_loss = ranking_loss(answer_id, t_logits, s_logits) + student.lm_predictions.lm_head.dropout_reg()
 
         # feature loss
-        # f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(r_loss)
+        f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(r_loss)
+
+        # vanilla kd loss
+        v_loss = F.kl_div(torch.log_softmax(s_logits / args.temperature, dim=1),
+                          torch.softmax(t_logits / args.temperature, dim=1),
+                          reduction="batchmean") * args.temperature ** 2 \
+            if args.alpha_v > 0 else torch.zeros_like(r_loss)
 
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
@@ -136,14 +118,22 @@ def train_one_epoch(
         else:
             c_loss = F.cross_entropy(s_logits, answer_id)
 
-        # loss = c_loss + args.alpha_r * r_loss + args.alpha_f * f_loss
-        loss = c_loss + args.alpha_r * r_loss
+        loss = c_loss + args.alpha_r * r_loss + args.alpha_f * f_loss + args.alpha_v * v_loss
         ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=20)
-        loss_dict = {"loss": loss, "cls_loss": c_loss, "rank_loss": r_loss, "ndcg": ndcg,
-                     "uc_dropout": uc_dropout, "std": std}
+        display_dict = {"loss": loss, "cls_loss": c_loss, "rank_loss": r_loss, "feat_loss": f_loss, "ndcg": ndcg, "std": std}
+        if args.uc_mode == 'l':
+            uc_dropout = student.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
+            display_dict.update({"uc_dropout": uc_dropout})
+        elif args.uc_mode == 'b':
+            mu = student.lm_predictions.lm_head.dropout.mu.mean().detach()
+            log_sigma = student.lm_predictions.lm_head.dropout.log_sigma.mean().detach()
+            display_dict.update({"mu": mu, "log_sigma": log_sigma})
+        else:
+            uc_dropout = student.lm_predictions.lm_head.dropout.drop_prob
+            display_dict.update({"uc_dropout": uc_dropout})
 
         # reduce losses over all GPUs for logging purposes
-        loss_dict_reduced = dist.reduce_dict(loss_dict)
+        display_dict_reduced = dist.reduce_dict(display_dict)
 
         optimizer.zero_grad()
         loss.backward()
@@ -153,12 +143,12 @@ def train_one_epoch(
 
         adjust_learning_rate(
             optimizer,
-            curr_step=curr_step,
+            curr_step=epoch * len(data_loader) + i_batch,
             num_training_steps=num_training_steps,
             args=args,
         )
 
-        metric_logger.update(**loss_dict_reduced)
+        metric_logger.update(**display_dict_reduced)
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
