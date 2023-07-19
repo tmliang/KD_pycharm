@@ -73,7 +73,8 @@ def train_one_epoch(
                 attention_mask=text_mask
             )
             t_logits = teacher_output["logits"][:, delay:][mask]  # (B, C)
-            t_states = torch.stack(teacher_output["adapter_states"])
+            # t_states = torch.stack(teacher_output["adapter_states"])
+            t_states = teacher_output["adapter_states"][-1]
 
         # forward
         student_output = student(
@@ -83,7 +84,8 @@ def train_one_epoch(
             attention_mask=text_mask
         )
         s_logits = student_output["logits"][:, delay:][mask]
-        s_states = torch.stack(student_output["adapter_states"])
+        # s_states = torch.stack(student_output["adapter_states"])
+        s_states = student_output["adapter_states"][-1]
         s_reps = student_output["last_hidden_state"][:, delay:][mask]
 
         if args.alpha_uc > 0:
@@ -94,8 +96,6 @@ def train_one_epoch(
             std = torch.std(sample_logits, dim=1)
             s_logits += args.alpha_uc * std
             std = std.mean().detach()
-        else:
-            std = torch.zeros(1)
 
         answer_id = batch_dict["answer_id"].to(device)
 
@@ -120,13 +120,23 @@ def train_one_epoch(
 
         loss = c_loss + args.alpha_r * r_loss + args.alpha_f * f_loss + args.alpha_v * v_loss
         ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=20)
-        display_dict = {"loss": loss, "cls_loss": c_loss, "rank_loss": r_loss, "feat_loss": f_loss, "ndcg": ndcg, "std": std}
+        display_dict = {"loss": loss, "cls_loss": c_loss, "rank_loss": r_loss,  "ndcg": ndcg}
+
+        if args.alpha_f > 0:
+            display_dict.update({"feat_loss": f_loss})
+
+        if args.alpha_v > 0:
+            display_dict.update({"logits_kd_loss": v_loss})
+
+        if args.alpha_uc > 0:
+            display_dict.update({"std": std})
+
         if args.uc_mode == 'l':
             uc_dropout = student.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
             display_dict.update({"uc_dropout": uc_dropout})
         elif args.uc_mode == 'b':
-            mu = student.lm_predictions.lm_head.dropout.mu.mean().detach()
-            log_sigma = student.lm_predictions.lm_head.dropout.log_sigma.mean().detach()
+            mu = student.lm_predictions.lm_head.dropout.bnn_layer[0].mu.mean().detach()
+            log_sigma = student.lm_predictions.lm_head.dropout.bnn_layer[0].log_sigma.mean().detach()
             display_dict.update({"mu": mu, "log_sigma": log_sigma})
         else:
             uc_dropout = student.lm_predictions.lm_head.dropout.drop_prob

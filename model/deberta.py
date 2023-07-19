@@ -38,7 +38,7 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers import DebertaV2Config
 
 from .learnable_dropout import ConcreteDropout
-from .bnn import BayesianMask
+from .bnn import BNN
 
 
 _CONFIG_FOR_DOC = "DebertaV2Config"
@@ -1550,7 +1550,7 @@ class DebertaV2LMPredictionHead(nn.Module):
         if uc_mode == 'l':
             self.dropout = ConcreteDropout(dropout)
         elif uc_mode == 'b':
-            self.dropout = BayesianMask(config.hidden_size, mu=dropout)
+            self.dropout = BNN(config.hidden_size, mu=dropout)
         else:
             self.dropout = StableDropout(dropout)
 
