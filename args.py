@@ -365,11 +365,11 @@ def get_args_parser():
         "--uc_mode",
         type=str,
         default="",
-        help="'l': learnable dropout, 'b': BNN, 'v': VAE."
+        help="'': normal dropout , 'l': learnable dropout, 'b': BNN, 'v': VAE."
     )
     parser.add_argument("--uc_drop", type=float, default=0)
     parser.add_argument("--num_sample", type=int, default=10)
-    parser.add_argument("--alpha_v", default=10, type=float)
+    parser.add_argument("--alpha_v", default=0, type=float)
     parser.add_argument("--alpha_r", default=10, type=float)
     parser.add_argument("--alpha_f", default=0, type=float)
     parser.add_argument("--alpha_uc", default=0, type=float, help="weight of standard bias")
