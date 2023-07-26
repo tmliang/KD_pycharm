@@ -20,7 +20,7 @@ from model import build_model, get_tokenizer
 from args import get_args_parser
 from util.misc import get_mask, adjust_learning_rate
 from util.metrics import MetricLogger
-from kd_loss import build_ranking_loss
+from kd_loss import ListwiseLoss, PairwiseLoss
 from metrics.ndcg import ndcg_at_k
 from metrics.eval_metrics import mean_average_precision
 
@@ -29,7 +29,8 @@ def train_one_epoch(
         teacher: torch.nn.Module,
         student: torch.nn.Module,
         tokenizer,
-        ranking_loss,
+        listwise_loss,
+        pairwise_loss,
         data_loader: Iterable,
         optimizer: torch.optim.Optimizer,
         device: torch.device,
@@ -73,8 +74,8 @@ def train_one_epoch(
                 attention_mask=text_mask
             )
             t_logits = teacher_output["logits"][:, delay:][mask]  # (B, C)
-            # t_states = torch.stack(teacher_output["adapter_states"])
             t_states = teacher_output["adapter_states"][-1]
+            t_reps = teacher_output["last_hidden_state"][:, delay:][mask]
 
         # forward
         student_output = student(
@@ -84,32 +85,33 @@ def train_one_epoch(
             attention_mask=text_mask
         )
         s_logits = student_output["logits"][:, delay:][mask]
-        # s_states = torch.stack(student_output["adapter_states"])
         s_states = student_output["adapter_states"][-1]
         s_reps = student_output["last_hidden_state"][:, delay:][mask]
 
-        if args.alpha_uc > 0:
-            sample_logits = []
-            for _ in range(random.randint(2, args.num_sample)):
-                sample_logits.append(student.predict(s_reps, enable_dropout=True))
-            sample_logits = torch.stack(sample_logits, dim=1)
-            std = torch.std(sample_logits, dim=1)
-            s_logits += args.alpha_uc * std
-            std = std.mean().detach()
-
         answer_id = batch_dict["answer_id"].to(device)
 
-        # ranking loss
-        r_loss = ranking_loss(answer_id, t_logits, s_logits) + student.lm_predictions.lm_head.dropout_reg()
+        # listwise loss
+        l_loss = listwise_loss(answer_id, t_logits, s_logits) + student.lm_predictions.lm_head.dropout_reg()
+
+        # pairwise loss
+        if args.alpha_p > 0:
+            sample_logits = []
+            k = random.randint(2, args.num_sample)
+            for _ in range(k):
+                sample_logits.append(teacher.predict(t_reps, enable_dropout=True))
+            sample_logits = torch.stack(sample_logits, dim=1)
+            p_loss = pairwise_loss(t_logits, s_logits, sample_logits, hard=args.hard)
+        else:
+            p_loss = torch.zeros_like(l_loss)
 
         # feature loss
-        f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(r_loss)
+        f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(l_loss)
 
         # vanilla kd loss
         v_loss = F.kl_div(torch.log_softmax(s_logits / args.temperature, dim=1),
                           torch.softmax(t_logits / args.temperature, dim=1),
                           reduction="batchmean") * args.temperature ** 2 \
-            if args.alpha_v > 0 else torch.zeros_like(r_loss)
+            if args.alpha_v > 0 else torch.zeros_like(l_loss)
 
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
@@ -118,18 +120,18 @@ def train_one_epoch(
         else:
             c_loss = F.cross_entropy(s_logits, answer_id)
 
-        loss = c_loss + args.alpha_r * r_loss + args.alpha_f * f_loss + args.alpha_v * v_loss
+        loss = c_loss + args.alpha_l * l_loss + args.alpha_f * f_loss + args.alpha_v * v_loss + args.alpha_p * p_loss
         ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=20)
-        display_dict = {"loss": loss, "cls_loss": c_loss, "rank_loss": r_loss,  "ndcg": ndcg}
+        display_dict = {"loss": loss, "cls_loss": c_loss, "list_loss": l_loss,  "ndcg": ndcg}
+
+        if args.alpha_p > 0:
+            display_dict.update({"pair_loss": p_loss})
 
         if args.alpha_f > 0:
             display_dict.update({"feat_loss": f_loss})
 
         if args.alpha_v > 0:
             display_dict.update({"logits_kd_loss": v_loss})
-
-        if args.alpha_uc > 0:
-            display_dict.update({"std": std})
 
         if args.uc_mode == 'l':
             uc_dropout = student.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
@@ -218,14 +220,6 @@ def evaluate(
 
         logits = output["logits"][:, delay:][mask]
         reps = output["last_hidden_state"][:, delay:][mask]
-
-        if args.uc_eval:
-            sample_logits = []
-            for _ in range(args.num_sample):
-                sample_logits.append(model.predict(reps, enable_dropout=True))
-            sample_logits = torch.stack(sample_logits, dim=1)
-            std = torch.std(sample_logits, dim=1)
-            logits += args.alpha_uc * std
 
         logits = logits.softmax(-1)
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
@@ -342,7 +336,8 @@ def main(args):
     model.to(device)
 
     # setting loss
-    ranking_loss = build_ranking_loss(args)
+    listwise_loss = ListwiseLoss(args)
+    pairwise_loss = PairwiseLoss(args)
 
     # load teacher
     teacher = None
@@ -353,6 +348,8 @@ def main(args):
         checkpoint = torch.load(args.teacher_load, map_location="cpu")
         teacher.load_state_dict(checkpoint["model"], strict=False)
         teacher.eval()
+        teacher.lm_predictions.lm_head.dropout.train()
+        model.lm_predictions.lm_head.dropout = teacher.lm_predictions.lm_head.dropout
 
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
@@ -403,7 +400,8 @@ def main(args):
                 teacher=teacher,
                 student=model,
                 tokenizer=tokenizer,
-                ranking_loss=ranking_loss,
+                listwise_loss=listwise_loss,
+                pairwise_loss=pairwise_loss,
                 data_loader=dataloader_train,
                 optimizer=optimizer,
                 device=device,

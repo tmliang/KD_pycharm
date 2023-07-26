@@ -332,29 +332,22 @@ def get_args_parser():
         help="weight scheme in lambda losses"
     )
     parser.add_argument(
-        "--loss_func",
+        "--list_loss",
         type=str,
         default='listnet',
-        choices=["vanilla",
-                 "dkd", "stdkd", "tridkd",
-                 "listnet", "stlistnet", "listmle", "lambda", "margin_mse", "margin_rank", "ranknet"
-                 ]
+        choices=["listnet", "stlistnet", "listmle", "lambda", "margin_mse", "margin_rank", "ranknet"]
     )
     parser.add_argument(
-        "--sigma",
-        type=float,
-        default=1.
+        "--pair_loss",
+        type=str,
+        default='margin_rank',
+        choices=["margin_mse", "margin_rank", "ranknet"]
     )
     parser.add_argument(
-        "--tau",
+        "--p_factor",
         type=float,
-        default=1.
-    )
-    parser.add_argument(
-        "--margin",
-        type=float,
-        default=0.,
-        help="margin in margin-mse and margin-rank losses",
+        default=1.,
+        help="factors in pairwise losses, i.e., margin in margin_rank, and temperature in ranknet",
     )
     parser.add_argument(
         "--temperature",
@@ -370,16 +363,9 @@ def get_args_parser():
     parser.add_argument("--uc_drop", type=float, default=0)
     parser.add_argument("--num_sample", type=int, default=10)
     parser.add_argument("--alpha_v", default=0, type=float)
-    parser.add_argument("--alpha_r", default=10, type=float)
+    parser.add_argument("--alpha_l", default=10, type=float)
     parser.add_argument("--alpha_f", default=0, type=float)
-    parser.add_argument("--alpha_uc", default=0, type=float, help="weight of standard bias")
+    parser.add_argument("--alpha_p", default=0, type=float)
     parser.add_argument("--uc_eval", action="store_true")
-
-    parser.add_argument("--dropout_schedule",
-        default="linear_with_warmup",
-        choices=["", "linear_with_warmup", "cosine_annealing_with_warmup", "random", "step_up", "step_down"]
-    )
-    parser.add_argument("--min_drop", type=float, default=0)
-    parser.add_argument("--max_drop", type=float, default=0.5)
-    parser.add_argument("--drop_warmup_fraction", type=float, default=0.5)
+    parser.add_argument("--hard", action="store_true")
     return parser

@@ -7,7 +7,7 @@ search_space:
     _value: [ 0, 0.001, 0.01, 0.1, 1, 5 ]
 
 
-trial_command: PYTHONPATH=. python rankingkd.py --dataset msvd --teacher_load=ckpt/msvd/msvd_a.pth --load=ckpt/msvd/msvd_b.pth --batch_size=6 --batch_size_val=32 --loss_func=stlistnet --neg_sampler=exp
+trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msvd --teacher_load=ckpt/msvd/msvd_a.pth --load=ckpt/msvd/msvd_b.pth --batch_size=6 --batch_size_val=32 --loss_func=stlistnet --neg_sampler=exp
 trial_code_directory: ~/KD
 
 trialGpuNumber: 1
@@ -23,4 +23,4 @@ training_service:
   platform: local
   useActiveGpu: True
   maxTrialNumberPerGpu: 1
-  gpuIndices: 0, 1
+  gpuIndices: 0, 1, 3, 4, 5

@@ -1520,7 +1520,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
             adapter_states=outputs.adapter_states
         )
 
-    def predict(self, feat, enable_dropout):
+    def predict(self, feat, enable_dropout=False):
         return self.lm_predictions(feat, self.answer_embeddings.weight, self.answer_bias, enable_dropout)
 
 

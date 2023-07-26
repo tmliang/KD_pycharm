@@ -100,16 +100,16 @@ def train_one_epoch(
         answer_id = batch_dict["answer_id"].to(device)
 
         # ranking loss
-        r_loss = ranking_loss(answer_id, t_logits, s_logits) + student.lm_predictions.lm_head.dropout_reg()
+        l_loss = ranking_loss(answer_id, t_logits, s_logits) + student.lm_predictions.lm_head.dropout_reg()
 
         # feature loss
-        f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(r_loss)
+        f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(l_loss)
 
         # vanilla kd loss
         v_loss = F.kl_div(torch.log_softmax(s_logits / args.temperature, dim=1),
                           torch.softmax(t_logits / args.temperature, dim=1),
                           reduction="batchmean") * args.temperature ** 2 \
-            if args.alpha_v > 0 else torch.zeros_like(r_loss)
+            if args.alpha_v > 0 else torch.zeros_like(l_loss)
 
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
@@ -118,9 +118,9 @@ def train_one_epoch(
         else:
             c_loss = F.cross_entropy(s_logits, answer_id)
 
-        loss = c_loss + args.alpha_r * r_loss + args.alpha_f * f_loss + args.alpha_v * v_loss
+        loss = c_loss + args.alpha_l * l_loss + args.alpha_f * f_loss + args.alpha_v * v_loss
         ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=20)
-        display_dict = {"loss": loss, "cls_loss": c_loss, "rank_loss": r_loss,  "ndcg": ndcg}
+        display_dict = {"loss": loss, "cls_loss": c_loss, "rank_loss": l_loss,  "ndcg": ndcg}
 
         if args.alpha_f > 0:
             display_dict.update({"feat_loss": f_loss})
