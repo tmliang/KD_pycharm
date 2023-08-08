@@ -96,11 +96,11 @@ def train_one_epoch(
         # pairwise loss
         if args.alpha_p > 0:
             sample_logits = []
-            k = random.randint(2, args.num_sample)
-            for _ in range(k):
+            # k = random.randint(2, args.num_sample)
+            for _ in range(args.num_sample):
                 sample_logits.append(teacher.predict(t_reps, enable_dropout=True))
             sample_logits = torch.stack(sample_logits, dim=1)
-            p_loss = pairwise_loss(t_logits, s_logits, sample_logits, hard=args.hard)
+            p_loss = pairwise_loss(answer_id, t_logits, s_logits, sample_logits)
         else:
             p_loss = torch.zeros_like(l_loss)
 
@@ -338,6 +338,7 @@ def main(args):
     # setting loss
     listwise_loss = ListwiseLoss(args)
     pairwise_loss = PairwiseLoss(args)
+    pairwise_loss.to(device)
 
     # load teacher
     teacher = None
@@ -353,8 +354,10 @@ def main(args):
 
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
-    optimizer = torch.optim.Adam(
-        params_for_optimization,
+    optimizer = torch.optim.Adam([
+        {'params': params_for_optimization},
+        {'params': pairwise_loss.parameters(), 'lr': args.pair_lr_weight * args.lr},
+    ],
         lr=args.lr
     )
 

@@ -140,7 +140,7 @@ class XSoftmax(torch.autograd.Function):
     @staticmethod
     def backward(self, grad_output):
         (output,) = self.saved_tensors
-        inputGrad = _softmax_backward_data(grad_output, output, self.dim, output)
+        inputGrad = _softmax_backward_data(grad_output, output, self.dim, output.dtype)
         return inputGrad, None, None
 
 
@@ -601,7 +601,7 @@ def make_log_bucket_position(relative_pos, bucket_size, max_position):
         np.ceil(np.log(abs_pos / mid) / np.log((max_position - 1) / mid) * (mid - 1))
         + mid
     )
-    bucket_pos = np.where(abs_pos <= mid, relative_pos, log_pos * sign).astype(np.int)
+    bucket_pos = np.where(abs_pos <= mid, relative_pos, log_pos * sign).astype(int)
     return bucket_pos
 
 

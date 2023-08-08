@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .listwise import ListNet, STListNet, ListMLE, LambdaLoss
 from .utils import pair_minus
+from model.assigner import WeightAssigner
 
 
 class Sampler(nn.Module):
@@ -46,11 +47,10 @@ class Sampler(nn.Module):
         return samples.gather(1, ind)
 
 
-class ListwiseLoss(nn.Module):
+class RankingLoss(nn.Module):
     """
-    This is the base model to construct the target ranking list in order to compute different listwise losses.
+    This is the base model to construct the target ranking list in order to compute different losses.
     """
-
     def __init__(self, args):
         super().__init__()
         self.n_pos = args.n_pos
@@ -59,7 +59,7 @@ class ListwiseLoss(nn.Module):
 
     def sort_scores_by_teacher(self, gt, t_score, s_score):
         if len(gt.shape) == 1:
-            sorted_ind = torch.sort(t_score, descending=True).indices
+            sorted_ind = torch.argsort(t_score, descending=True)
             pos_list = sorted_ind[:, :self.n_pos]
             neg_list = self.Sampler(sorted_ind[:, self.n_pos:])
         else:
@@ -70,10 +70,20 @@ class ListwiseLoss(nn.Module):
             #     score[gt] = float('-inf')
             #     sorted_ind = torch.sort(score, descending=True).indices
             #     pos_list = []
-        ind = torch.cat([pos_list, neg_list], 1)
-        t_score = t_score.gather(1, ind)
-        s_score = s_score.gather(1, ind)
-        return t_score, s_score
+        select = torch.cat([pos_list, neg_list], 1)
+        return select
+
+    def forward(self, *args, **kwargs):
+        pass
+
+    def _loss_func(self, args):
+        pass
+
+
+class ListwiseLoss(RankingLoss):
+
+    def __init__(self, args):
+        super().__init__(args)
 
     def forward(self, gt, t_score, s_score):
         """
@@ -82,7 +92,9 @@ class ListwiseLoss(nn.Module):
         :param s_score: student predictions
         :return: kd_loss value, a torch.Tensor
         """
-        t_score, s_score = self.sort_scores_by_teacher(gt, t_score, s_score)
+        select = self.sort_scores_by_teacher(gt, t_score, s_score)
+        t_score = t_score.gather(1, select)
+        s_score = s_score.gather(1, select)
         return self.loss(t_score, s_score)
 
     def _loss_func(self, args):
@@ -99,63 +111,106 @@ class ListwiseLoss(nn.Module):
             raise NotImplementedError
 
 
-class PairwiseLoss(nn.Module):
+class PairwiseLoss(RankingLoss):
     def __init__(self, args):
-        super().__init__()
-        self.loss_func = args.pair_loss
+        super().__init__(args)
         self.factor = args.p_factor
-        if args.pair_loss == 'margin_rank':
-            self.loss_func = self._forward_margin_rank
-        elif args.pair_loss == 'margin_mse':
-            self.loss_func = self._forward_margin_mse
-        elif args.pair_loss == 'ranknet':
+        self.assigner = WeightAssigner(args.num_sample,
+                                       num_layer=args.gnn_layer,
+                                       num_edge=args.num_edge,
+                                       ds_node=args.ds_node,
+                                       ds_edge=args.ds_edge,
+                                       hidden_size=args.gnn_dim,
+                                       dropout=args.gnn_dropout)
+
+    def forward(self, gt, t_score, s_score, sample_dist):
+        sample_rank = sample_dist.argsort(-1, descending=True).argsort().float()
+        uc_pair = pair_minus(sample_rank).std(1)
+        uc_point = sample_rank.std(1)
+        weight, select = self.assigner(sample_dist.transpose(1, 2), uc_pair, uc_point)
+        t_score = t_score.gather(1, select)
+        s_score = s_score.gather(1, select)
+
+        # take upper triangle
+        mask = torch.ones_like(weight[0]).triu(1).bool()
+        t_dist = pair_minus(t_score).masked_select(mask)
+        s_dist = pair_minus(s_score).masked_select(mask)
+        weight = weight.masked_select(mask)
+        return self.loss(t_dist, s_dist, weight)
+
+    def _forward_margin_rank(self, target, score, weight):
+        target = target.sign()
+        loss = torch.max(torch.zeros_like(score), -target*score + self.factor * weight).mean()
+        return loss
+
+    def _forward_margin_mse(self, target, score, weight):
+        target = target * weight
+        score = score * weight
+        loss = F.mse_loss(score, target)
+        return loss
+
+    def _forward_ranknet(self, target, score, weight):
+        target = (target.sign() + 1) / 2
+        score = score / self.factor
+        loss = F.binary_cross_entropy_with_logits(score, target, reduction='none')
+        loss = (loss * weight).mean()
+        return loss
+
+    def _loss_func(self, args):
+        loss_func = args.pair_loss
+        if loss_func == 'margin_rank':
+            return self._forward_margin_rank
+        elif loss_func == 'margin_mse':
+            return self._forward_margin_mse
+        elif loss_func == 'ranknet':
             assert args.p_factor > 0
-            self.loss_func = self._forward_ranknet
-
-    def forward(self, t_score, s_score, sample_distances, hard=True):
-        return self.loss_func(t_score, s_score, sample_distances, hard) * 2     # scale == 2
-
-    def _forward_margin_rank(self, t_score, s_score, sample_distances, hard):
-        if hard:
-            sample_pos_pairs = (pair_minus(sample_distances) > 0).all(dim=1)
-            t_pos_pairs = pair_minus(t_score) > 0
-            select = (sample_pos_pairs & t_pos_pairs).float().nonzero()
-            si = s_score[select[:, 0], select[:, 1]]
-            sj = s_score[select[:, 0], select[:, 2]]
-            loss = F.margin_ranking_loss(si, sj, torch.ones_like(si), margin=self.factor)
+            return self._forward_ranknet
         else:
-            sample_pos_prob = (pair_minus(sample_distances) > 0).float().mean(1)
-            sample_pos_prob_norm = (sample_pos_prob - sample_pos_prob.transpose(1, 2)).triu_()
-            target = pair_minus(t_score).sign().triu_()
-            score = pair_minus(s_score).triu_()
-            loss = torch.max(torch.zeros_like(score), -target*score + self.factor * sample_pos_prob_norm).mean()
-        return loss
+            raise NotImplementedError
 
-    def _forward_margin_mse(self, t_score, s_score, sample_distances, hard):
-        t_dist = pair_minus(t_score)
-        s_dist = pair_minus(s_score)
-        if hard:
-            sample_pos_pairs = (pair_minus(sample_distances) > 0).all(dim=1)
-            select = sample_pos_pairs & (t_dist > 0)
-            loss = F.mse_loss(s_dist[select], t_dist[select])
-        else:
-            sample_pos_prob_norm = (pair_minus(sample_distances) > 0).float().mean(1).triu_(1)    # one-side prob
-            target = t_dist * sample_pos_prob_norm
-            score = s_dist * sample_pos_prob_norm
-            loss = F.mse_loss(score, target)
-        return loss
 
-    def _forward_ranknet(self, t_score, s_score, sample_distances, hard):
-        t_dist = pair_minus(t_score)
-        s_dist = pair_minus(s_score)
-        if hard:
-            sample_pos_pairs = (pair_minus(sample_distances) > 0).all(dim=1)
-            select = sample_pos_pairs & (t_dist > 0)
-            score = torch.sigmoid(s_dist[select] / self.factor)
-            loss = F.binary_cross_entropy_with_logits(score, torch.ones_like(score))
-        else:
-            sample_pos_prob_norm = (pair_minus(sample_distances) > 0).float().mean(1).triu_(1)    # one-side prob
-            target = (t_dist.sign() + 1) / 2
-            score = s_dist / self.factor
-            loss = F.binary_cross_entropy_with_logits(score, target, weight=sample_pos_prob_norm)
-        return loss
+# class PairwiseLoss(RankingLoss):
+#     def __init__(self, args):
+#         super().__init__(args)
+#         self.factor = args.p_factor
+#
+#     def forward(self, gt, t_score, s_score, sample_dist):
+#         select = self.sort_scores_by_teacher(gt, t_score, s_score)
+#         t_score = t_score.gather(1, select)
+#         s_score = s_score.gather(1, select)
+#         sample_dist = sample_dist.gather(2, select.unsqueeze(1).expand(-1, sample_dist.size(1), -1))
+#
+#         uc = (pair_minus(sample_dist) > 0).float().mean(1)
+#         select_ind, select_uc = self.sample(uc)
+#         t_dist = pair_minus(t_score)[select_ind[:, 0], select_ind[:, 1], select_ind[:, 2]]
+#         s_dist = pair_minus(s_score)[select_ind[:, 0], select_ind[:, 1], select_ind[:, 2]]
+#         return self.loss_func(t_dist, s_dist, select_uc) * 2     # scale == 2
+#
+#     def _forward_margin_rank(self, target, score, weight):
+#         target = target.sign()
+#         loss = torch.max(torch.zeros_like(score), -target*score + self.factor * weight).mean()
+#         return loss
+#
+#     def _forward_margin_mse(self, target, score, weight):
+#         target = target * weight
+#         score = score * weight
+#         loss = F.mse_loss(score, target)
+#         return loss
+#
+#     def _forward_ranknet(self, target, score, weight):
+#         target = (target.sign() + 1) / 2
+#         score = score / self.factor
+#         loss = F.binary_cross_entropy_with_logits(score, target, weight=weight)
+#         return loss
+#
+#     def _loss_func(self, args):
+#         loss_func = args.pair_loss
+#         if loss_func == 'margin_rank':
+#             return self._forward_margin_rank
+#         elif loss_func == 'margin_mse':
+#             return self._forward_margin_mse
+#         elif loss_func == 'ranknet':
+#             assert args.p_factor > 0
+#             return self._forward_ranknet
+#         else:
+#             raise NotImplementedError

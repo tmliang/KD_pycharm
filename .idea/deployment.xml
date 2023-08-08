@@ -52,6 +52,17 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="49">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/KD" local="$PROJECT_DIR$" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath path="/KD/TRANSFORMERS_CACHE" />
+            <excludedPath path="/KD/data" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
       <paths name="76">
         <serverdata>
           <mappings>

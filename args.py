@@ -367,5 +367,13 @@ def get_args_parser():
     parser.add_argument("--alpha_f", default=0, type=float)
     parser.add_argument("--alpha_p", default=0, type=float)
     parser.add_argument("--uc_eval", action="store_true")
-    parser.add_argument("--hard", action="store_true")
+
+    # WeightAssigner
+    parser.add_argument("--gnn_layer", type=int, default=2)
+    parser.add_argument("--gnn_dim", type=float, default=128)
+    parser.add_argument("--gnn_dropout", type=float, default=0.1)
+    parser.add_argument("--pair_lr_weight", type=float, default=10)
+    parser.add_argument("--num_edge", type=int, default=8)
+    parser.add_argument("--ds_node", type=float, default=2)
+    parser.add_argument("--ds_edge", type=float, default=4)
     return parser
