@@ -115,38 +115,33 @@ class PairwiseLoss(RankingLoss):
     def __init__(self, args):
         super().__init__(args)
         self.factor = args.p_factor
-        self.assigner = WeightAssigner(args.num_sample,
-                                       num_layer=args.gnn_layer,
+        self.assigner = WeightAssigner(num_layer=args.gnn_layer,
                                        num_edge=args.num_edge,
                                        ds_node=args.ds_node,
                                        ds_edge=args.ds_edge,
                                        hidden_size=args.gnn_dim,
                                        dropout=args.gnn_dropout)
 
-    def forward(self, gt, t_score, s_score, sample_dist):
-        sample_rank = sample_dist.argsort(-1, descending=True).argsort().float()
+    def forward(self, gt, t_score, s_score, sample_dist, weight_decay=0):
+        sample_rank = sample_dist.argsort(descending=True).argsort().float()
         uc_pair = pair_minus(sample_rank).std(1)
         uc_point = sample_rank.std(1)
-        weight, select = self.assigner(sample_dist.transpose(1, 2), uc_pair, uc_point)
+        weight, select = self.assigner(sample_dist, uc_pair, uc_point)
         t_score = t_score.gather(1, select)
         s_score = s_score.gather(1, select)
+        reg_loss = self.regularization(weight)
 
         # take upper triangle
         mask = torch.ones_like(weight[0]).triu(1).bool()
         t_dist = pair_minus(t_score).masked_select(mask)
         s_dist = pair_minus(s_score).masked_select(mask)
         weight = weight.masked_select(mask)
-        return self.loss(t_dist, s_dist, weight)
+        loss = self.loss(t_dist, s_dist, weight)
+        return loss + weight_decay * reg_loss
 
     def _forward_margin_rank(self, target, score, weight):
         target = target.sign()
         loss = torch.max(torch.zeros_like(score), -target*score + self.factor * weight).mean()
-        return loss
-
-    def _forward_margin_mse(self, target, score, weight):
-        target = target * weight
-        score = score * weight
-        loss = F.mse_loss(score, target)
         return loss
 
     def _forward_ranknet(self, target, score, weight):
@@ -156,12 +151,13 @@ class PairwiseLoss(RankingLoss):
         loss = (loss * weight).mean()
         return loss
 
+    def regularization(self, weight):
+        return 1 / weight.norm(dim=(1, 2)).mean()
+
     def _loss_func(self, args):
         loss_func = args.pair_loss
         if loss_func == 'margin_rank':
             return self._forward_margin_rank
-        elif loss_func == 'margin_mse':
-            return self._forward_margin_mse
         elif loss_func == 'ranknet':
             assert args.p_factor > 0
             return self._forward_ranknet

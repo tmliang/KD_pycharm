@@ -59,7 +59,6 @@
           </mappings>
           <excludedPaths>
             <excludedPath path="/KD/TRANSFORMERS_CACHE" />
-            <excludedPath path="/KD/data" />
           </excludedPaths>
         </serverdata>
       </paths>
@@ -87,6 +86,13 @@
           </excludedPaths>
         </serverdata>
       </paths>
+      <paths name="76-kd">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/KD" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="FrozenBiLM">
         <serverdata>
           <mappings>
@@ -95,13 +101,6 @@
         </serverdata>
       </paths>
       <paths name="atp">
-        <serverdata>
-          <mappings>
-            <mapping local="$PROJECT_DIR$" web="/" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="tianming@172.18.167.46:22 password">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />

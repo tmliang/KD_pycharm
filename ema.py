@@ -8,7 +8,6 @@ import copy
 import math
 import sys
 import argparse
-import logging
 import time
 import datetime
 from util import dist
@@ -21,26 +20,30 @@ from model import build_model, get_tokenizer
 from args import get_args_parser
 from util.misc import get_mask, adjust_learning_rate
 from util.metrics import MetricLogger
-from kd_loss import build_ranking_loss
+from kd_loss import ListwiseLoss, PairwiseLoss
 from metrics.ndcg import ndcg_at_k
 from metrics.eval_metrics import mean_average_precision
 
-M = 10
-Q = 3
+
+def ema_update(teacher, student, momentum=0.999):
+    for t_params, s_params in zip(teacher.parameters(), student.parameters()):
+        if s_params.requires_grad:
+            t_params.data.mul_(momentum).add_(s_params.data * (1.0 - momentum))
 
 
 def train_one_epoch(
-    TQ,
-    student: torch.nn.Module,
-    tokenizer,
-    ranking_loss,
-    data_loader: Iterable,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-    epoch: int,
-    dataset_name,
-    args,
-    max_norm: float = 0,
+        teacher: torch.nn.Module,
+        student: torch.nn.Module,
+        tokenizer,
+        listwise_loss,
+        pairwise_loss,
+        data_loader: Iterable,
+        optimizer: torch.optim.Optimizer,
+        device: torch.device,
+        epoch: int,
+        dataset_name,
+        args,
+        max_norm: float = 0,
 ):
     student.train()
     metric_logger = MetricLogger(delimiter="  ")
@@ -48,7 +51,7 @@ def train_one_epoch(
     num_training_steps = int(len(data_loader) * args.epochs)
 
     for i_batch, batch_dict in enumerate(
-        metric_logger.log_every(data_loader, args.print_freq, header)
+            metric_logger.log_every(data_loader, args.print_freq, header)
     ):
         video = batch_dict["video"].to(device)
         video_len = batch_dict["video_len"]
@@ -65,16 +68,20 @@ def train_one_epoch(
 
         text_ids = encoded["input_ids"].to(device)
         text_mask = encoded["attention_mask"].to(device)
+        mask = text_ids == tokenizer.mask_token_id
+        delay = args.max_feats if args.use_video else 0
 
         # teacher forward
         with torch.no_grad():
-            teacher_outputs = [teacher(
+            teacher_output = teacher(
                 video=video,
                 video_mask=video_mask,
                 input_ids=text_ids,
-                attention_mask=text_mask)
-                for teacher in TQ
-            ]
+                attention_mask=text_mask
+            )
+            t_logits = teacher_output["logits"][:, delay:][mask]  # (B, C)
+            t_states = teacher_output["adapter_states"][-1]
+            t_reps = teacher_output["last_hidden_state"][:, delay:][mask]
 
         # forward
         student_output = student(
@@ -83,36 +90,67 @@ def train_one_epoch(
             input_ids=text_ids,
             attention_mask=text_mask
         )
-
-        mask = encoded["input_ids"] == tokenizer.mask_token_id
-        delay = args.max_feats if args.use_video else 0
-        t_logits = [output["logits"][:, delay: text_ids.size(1) + delay][mask] for output in teacher_outputs]
-        t_logits = torch.stack(t_logits).mean(0)
-        s_logits = student_output["logits"][:, delay: text_ids.size(1) + delay][mask]
+        s_logits = student_output["logits"][:, delay:][mask]
+        s_states = student_output["adapter_states"][-1]
+        s_reps = student_output["last_hidden_state"][:, delay:][mask]
 
         answer_id = batch_dict["answer_id"].to(device)
-        rank_loss = ranking_loss(answer_id, t_logits, s_logits)
-        ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=10)
+
+        # listwise loss
+        l_loss = listwise_loss(answer_id, t_logits, s_logits)
+
+        # pairwise loss
+        if args.alpha_p > 0:
+            sample_logits = []
+            # k = random.randint(2, args.num_sample)
+            for _ in range(args.num_sample):
+                sample_logits.append(teacher.predict(t_reps, enable_dropout=True))
+            sample_logits = torch.stack(sample_logits, dim=1)
+            if i_batch == 1083:
+                print(1)
+            p_loss = pairwise_loss(answer_id, t_logits, s_logits, sample_logits)
+        else:
+            p_loss = torch.zeros_like(l_loss)
+
+        # feature loss
+        f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(l_loss)
+
+        # vanilla kd loss
+        v_loss = F.kl_div(torch.log_softmax(s_logits / args.temperature, dim=1),
+                          torch.softmax(t_logits / args.temperature, dim=1),
+                          reduction="batchmean") * args.temperature ** 2 \
+            if args.alpha_v > 0 else torch.zeros_like(l_loss)
 
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
             nll = -F.log_softmax(s_logits, 1, _stacklevel=5)
-            cls_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
+            c_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
         else:
-            cls_loss = F.cross_entropy(s_logits, answer_id)
+            c_loss = F.cross_entropy(s_logits, answer_id, label_smoothing=args.label_smoothing)
 
-        loss = cls_loss + args.alpha * rank_loss
-        loss_dict = {"loss": loss, "cls_loss": cls_loss, "rank_loss": rank_loss, "ndcg": ndcg}
+        loss = c_loss + args.alpha_l * l_loss + args.alpha_f * f_loss + args.alpha_v * v_loss + args.alpha_p * p_loss
+        ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=20)
+        display_dict = {"loss": loss, "cls_loss": c_loss, "list_loss": l_loss,  "ndcg": ndcg}
+
+        if args.alpha_p > 0:
+            display_dict.update({"pair_loss": p_loss})
+
+        if args.alpha_f > 0:
+            display_dict.update({"feat_loss": f_loss})
+
+        if args.alpha_v > 0:
+            display_dict.update({"logits_kd_loss": v_loss})
 
         # reduce losses over all GPUs for logging purposes
-        loss_dict_reduced = dist.reduce_dict(loss_dict)
-
+        display_dict_reduced = dist.reduce_dict(display_dict)
 
         optimizer.zero_grad()
         loss.backward()
         if max_norm > 0:
             torch.nn.utils.clip_grad_norm_(student.parameters(), max_norm)
         optimizer.step()
+
+        # ema_update(teacher, student)
 
         adjust_learning_rate(
             optimizer,
@@ -121,7 +159,7 @@ def train_one_epoch(
             args=args,
         )
 
-        metric_logger.update(**loss_dict_reduced)
+        metric_logger.update(**display_dict_reduced)
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
@@ -130,14 +168,14 @@ def train_one_epoch(
 
 @torch.no_grad()
 def evaluate(
-    model: torch.nn.Module,
-    tokenizer,
-    data_loader,
-    device: torch.device,
-    dataset_name,
-    args,
-    thresholds=[1, 10],
-    split="test",
+        model: torch.nn.Module,
+        tokenizer,
+        data_loader,
+        device: torch.device,
+        dataset_name,
+        args,
+        thresholds=[1, 10],
+        split="test",
 ):
     model.eval()
     metric_logger = MetricLogger(delimiter="  ")
@@ -146,7 +184,7 @@ def evaluate(
     res = {}
 
     for i_batch, batch_dict in enumerate(
-        metric_logger.log_every(data_loader, args.print_freq, header)
+            metric_logger.log_every(data_loader, args.print_freq, header)
     ):
         video = batch_dict["video"].to(device)
         video_len = batch_dict["video_len"]
@@ -163,7 +201,7 @@ def evaluate(
         input_ids = encoded["input_ids"].to(device)
         attention_mask = encoded["attention_mask"].to(device)
         if (
-            not args.suffix and not args.use_context
+                not args.suffix and not args.use_context
         ):  # remove sep token if not using the suffix
             attention_mask[input_ids == tokenizer.sep_token_id] = 0
             input_ids[input_ids == tokenizer.sep_token_id] = tokenizer.pad_token_id
@@ -174,21 +212,15 @@ def evaluate(
             input_ids=input_ids,
             attention_mask=attention_mask,
         )
-
-        logits = output["logits"]
+        mask = input_ids == tokenizer.mask_token_id
         delay = args.max_feats if args.use_video else 0
-        logits = logits[:, delay : encoded["input_ids"].size(1) + delay][
-            encoded["input_ids"] == tokenizer.mask_token_id
-        ]  # get the prediction on the mask token
+
+        logits = output["logits"][:, delay:][mask]
+
         logits = logits.softmax(-1)
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
-        types = batch_dict["type"]
-        if "sub" in batch_dict:
-            subs = batch_dict["sub"]
-        else:
-            subs = [0] * len(types)
         if dataset_name == "ivqa":
             answer_id = (answer_id / 2).clamp(max=1)
             answer_id_expanded = answer_id.to(device)
@@ -208,7 +240,7 @@ def evaluate(
                 agreeings[x] = topk_aids[:, :x] == answer_id_expanded[:, :x]
 
         for i, (qid, gt, pred) in enumerate(
-            zip(qids, answer_id, topk_aids)
+                zip(qids, answer_id, topk_aids)
         ):
             res[qid] = {
                 "pred": pred.tolist(),
@@ -258,7 +290,7 @@ def main(args):
 
     # Build dataset
     tokenizer = get_tokenizer(args)
-    
+
     dataset_test = build_videoqa_dataset(
         args.dataset,
         "test",
@@ -295,18 +327,21 @@ def main(args):
     else:
         dataloader_train = None
 
-
     args.n_ans = len(dataloader_test.dataset.a2id)
     model = build_model(args)
     model.to(device)
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    if dist.is_main_process():
-        print("number of params:", n_parameters)
+
+    # setting loss
+    listwise_loss = ListwiseLoss(args)
+    pairwise_loss = PairwiseLoss(args)
+    pairwise_loss.to(device)
 
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
-    optimizer = torch.optim.Adam(
-        params_for_optimization,
+    optimizer = torch.optim.Adam([
+        {'params': params_for_optimization},
+        {'params': pairwise_loss.parameters(), 'lr': args.pair_lr_weight * args.lr},
+    ],
         lr=args.lr
     )
 
@@ -316,9 +351,9 @@ def main(args):
             print("loading student from", args.load)
         checkpoint = torch.load(args.load, map_location="cpu")
         model.load_state_dict(checkpoint["model"], strict=False)
-
-    # setting loss
-    ranking_loss = build_ranking_loss(args)
+        if args.resume and not args.eval:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            args.start_epoch = checkpoint["epoch"] + 1
 
     aid2tokid = torch.zeros(len(dataloader_test.dataset.a2id), args.max_atokens).long()
     for a, aid in dataloader_test.dataset.a2id.items():
@@ -337,48 +372,38 @@ def main(args):
         aid2tokid.to(model.device), freeze_last=args.freeze_last
     )  # init answer embedding module
     if not args.eval:
+
+        # load teacher
+        teacher = copy.deepcopy(model)
+        teacher.eval()
+        teacher.lm_predictions.lm_head.dropout.train()
+
         if dist.is_main_process():
             print("Start training")
-
+        start_time = time.time()
+        best_epoch = args.start_epoch
         best_acc = 0
-        TQ = []
-        for m in range(M):
-            checkpoint_path = os.path.join(args.save_dir, f"best_model.pth")
-            teacher = copy.deepcopy(model)
-            teacher.eval()
-            if m == 0:
-                if dist.is_main_process():
-                    print("loading teacher from %s" % args.teacher_load)
-                teacher.load_state_dict(torch.load(args.teacher_load, map_location="cpu")["model"], strict=False)
-            else:
-                if dist.is_main_process():
-                    print(f"updating teacher")
-                teacher.load_state_dict(torch.load(checkpoint_path, map_location="cpu")["model"], strict=False)
-            TQ.append(teacher)
-            if len(TQ) > Q:
-                TQ.pop(0)
+        for epoch in range(args.start_epoch, args.epochs):
             if dist.is_main_process():
-                print(f"Starting iteration {m}")
-                print(f"Teacher number: {len(TQ)}")
-            for epoch in range(0, args.epochs):
-                if dist.is_main_process():
-                    print(f"Starting epoch {epoch}")
-                if args.distributed:
-                    sampler_train.set_epoch(epoch)
-                train_stats = train_one_epoch(
-                    TQ=TQ,
-                    student=model,
-                    tokenizer=tokenizer,
-                    ranking_loss=ranking_loss,
-                    data_loader=dataloader_train,
-                    optimizer=optimizer,
-                    device=device,
-                    epoch=epoch,
-                    dataset_name=args.dataset,
-                    args=args,
-                    max_norm=args.clip_max_norm,
-                )
+                print(f"Starting epoch {epoch}")
+            if args.distributed:
+                sampler_train.set_epoch(epoch)
+            train_stats = train_one_epoch(
+                teacher=teacher,
+                student=model,
+                tokenizer=tokenizer,
+                listwise_loss=listwise_loss,
+                pairwise_loss=pairwise_loss,
+                data_loader=dataloader_train,
+                optimizer=optimizer,
+                device=device,
+                epoch=epoch,
+                dataset_name=args.dataset,
+                args=args,
+                max_norm=args.clip_max_norm,
+            )
 
+            if (epoch + 1) % args.eval_skip == 0:
                 val_stats = {}
                 print(f"Validating {args.dataset}")
 
@@ -395,36 +420,51 @@ def main(args):
                     {args.dataset + "_" + k: v for k, v in out.items()}
                 )
                 if out["acc1"] > best_acc:
+                    best_epoch = epoch
                     best_acc = out["acc1"]
+
                     if dist.is_main_process() and args.save_dir:
-                        print(f"updating best acc: {best_acc}")
-                        dist.save_on_master({"model": model.state_dict()}, checkpoint_path)
+                        checkpoint_path = os.path.join(
+                            args.save_dir, f"best_model.pth"
+                        )
+                        dist.save_on_master(
+                            {
+                                "model": model.state_dict(),
+                                "optimizer": optimizer.state_dict(),
+                                "epoch": epoch,
+                                "args": args,
+                            },
+                            checkpoint_path,
+                        )
+            else:
+                val_stats = {}
 
-                log_stats = {
-                    **{f"train_{k}": v for k, v in train_stats.items()},
-                    **{f"val_{k}": v for k, v in val_stats.items()},
-                    "epoch": epoch,
-                    "n_parameters": n_parameters,
-                }
+            log_stats = {
+                **{f"train_{k}": v for k, v in train_stats.items()},
+                **{f"val_{k}": v for k, v in val_stats.items()},
+                "epoch": epoch,
+            }
 
-                if args.save_dir and dist.is_main_process():
-                    with open(os.path.join(args.save_dir, "log.txt"), "a") as f:
-                        f.write(json.dumps(log_stats) + "\n")
+            if args.save_dir and dist.is_main_process():
+                with open(os.path.join(args.save_dir, "log.txt"), "a") as f:
+                    f.write(json.dumps(log_stats) + "\n")
 
-            print(f"best acc until now: {best_acc}")
+        total_time = time.time() - start_time
+        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        print("Training time {}".format(total_time_str))
+        # load best ckpt
+        if dist.is_main_process() and args.save_dir:
+            print(f"loading best checkpoint from epoch {best_epoch}")
+        if args.save_dir:
             if args.distributed:
                 torch.distributed.barrier()  # wait all processes
+            checkpoint = torch.load(
+                os.path.join(args.save_dir, f"best_model.pth"),
+                map_location="cpu",
+            )
+            model.load_state_dict(checkpoint["model"], strict=False)
 
-    if args.save_dir:
-        if args.distributed:
-            torch.distributed.barrier()  # wait all processes
-        checkpoint = torch.load(
-            os.path.join(args.save_dir, f"best_model.pth"),
-            map_location="cpu",
-        )
-        model.load_state_dict(checkpoint["model"], strict=False)
-
-    results, out = evaluate(
+    evaluate(
         model=model,
         tokenizer=tokenizer,
         data_loader=dataloader_test,
@@ -433,18 +473,6 @@ def main(args):
         args=args,
         split="test"
     )
-
-    if args.save_dir and dist.is_main_process():
-        json.dump(
-            results,
-            open(os.path.join(args.save_dir, args.dataset + ".json"), "w"),
-        )
-        json.dump(
-            out,
-            open(
-                os.path.join(args.save_dir, args.dataset + "summary.json"), "w"
-            ),
-        )
 
 
 if __name__ == "__main__":

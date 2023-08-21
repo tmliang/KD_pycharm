@@ -341,7 +341,7 @@ def get_args_parser():
         "--pair_loss",
         type=str,
         default='margin_rank',
-        choices=["margin_mse", "margin_rank", "ranknet"]
+        choices=["margin_rank", "ranknet"]
     )
     parser.add_argument(
         "--p_factor",
@@ -350,30 +350,34 @@ def get_args_parser():
         help="factors in pairwise losses, i.e., margin in margin_rank, and temperature in ranknet",
     )
     parser.add_argument(
-        "--temperature",
+        "--sigma",
         type=float,
         default=1.
     )
     parser.add_argument(
-        "--uc_mode",
-        type=str,
-        default="",
-        help="'': normal dropout , 'l': learnable dropout, 'b': BNN, 'v': VAE."
+        "--tau",
+        type=float,
+        default=1.
     )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.
+    )
+    parser.add_argument("--label_smoothing", type=float, default=0)
     parser.add_argument("--uc_drop", type=float, default=0)
     parser.add_argument("--num_sample", type=int, default=10)
     parser.add_argument("--alpha_v", default=0, type=float)
-    parser.add_argument("--alpha_l", default=10, type=float)
+    parser.add_argument("--alpha_l", default=0, type=float)
     parser.add_argument("--alpha_f", default=0, type=float)
     parser.add_argument("--alpha_p", default=0, type=float)
-    parser.add_argument("--uc_eval", action="store_true")
 
     # WeightAssigner
     parser.add_argument("--gnn_layer", type=int, default=2)
-    parser.add_argument("--gnn_dim", type=float, default=128)
+    parser.add_argument("--gnn_dim", type=float, default=64)
     parser.add_argument("--gnn_dropout", type=float, default=0.1)
     parser.add_argument("--pair_lr_weight", type=float, default=10)
     parser.add_argument("--num_edge", type=int, default=8)
-    parser.add_argument("--ds_node", type=float, default=2)
-    parser.add_argument("--ds_edge", type=float, default=4)
+    parser.add_argument("--ds_node", type=int, default=2)
+    parser.add_argument("--ds_edge", type=int, default=4)
     return parser

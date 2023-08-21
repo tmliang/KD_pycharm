@@ -90,28 +90,7 @@ def train_one_epoch(
 
         answer_id = batch_dict["answer_id"].to(device)
 
-        # listwise loss
-        l_loss = listwise_loss(answer_id, t_logits, s_logits) + student.lm_predictions.lm_head.dropout_reg()
-
-        # pairwise loss
-        if args.alpha_p > 0:
-            sample_logits = []
-            # k = random.randint(2, args.num_sample)
-            for _ in range(args.num_sample):
-                sample_logits.append(teacher.predict(t_reps, enable_dropout=True))
-            sample_logits = torch.stack(sample_logits, dim=1)
-            p_loss = pairwise_loss(answer_id, t_logits, s_logits, sample_logits)
-        else:
-            p_loss = torch.zeros_like(l_loss)
-
-        # feature loss
-        f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(l_loss)
-
-        # vanilla kd loss
-        v_loss = F.kl_div(torch.log_softmax(s_logits / args.temperature, dim=1),
-                          torch.softmax(t_logits / args.temperature, dim=1),
-                          reduction="batchmean") * args.temperature ** 2 \
-            if args.alpha_v > 0 else torch.zeros_like(l_loss)
+        loss = 0
 
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
@@ -120,29 +99,41 @@ def train_one_epoch(
         else:
             c_loss = F.cross_entropy(s_logits, answer_id)
 
-        loss = c_loss + args.alpha_l * l_loss + args.alpha_f * f_loss + args.alpha_v * v_loss + args.alpha_p * p_loss
-        ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=20)
-        display_dict = {"loss": loss, "cls_loss": c_loss, "list_loss": l_loss,  "ndcg": ndcg}
+        loss += c_loss
+        display_dict = {"cls_loss": c_loss}
 
+        # listwise loss
+        if args.alpha_l > 0:
+            l_loss = listwise_loss(answer_id, t_logits, s_logits)
+            loss += args.alpha_l * l_loss
+            display_dict.update({"list_loss": l_loss})
+
+        # pairwise loss
         if args.alpha_p > 0:
+            sample_logits = []
+            k = random.randint(2, args.num_sample)
+            for _ in range(k):
+                sample_logits.append(teacher.predict(t_reps, enable_dropout=True))
+            sample_logits = torch.stack(sample_logits, dim=1)
+            p_loss = pairwise_loss(answer_id, t_logits, s_logits, sample_logits)
+            loss += args.alpha_p * p_loss
             display_dict.update({"pair_loss": p_loss})
 
+        # feature loss
         if args.alpha_f > 0:
+            f_loss = F.mse_loss(t_states, s_states)
+            loss += args.alpha_f * f_loss
             display_dict.update({"feat_loss": f_loss})
 
+        # vanilla kd loss
         if args.alpha_v > 0:
-            display_dict.update({"logits_kd_loss": v_loss})
+            v_loss = F.kl_div(torch.log_softmax(s_logits / args.temperature, dim=1),
+                              torch.softmax(t_logits / args.temperature, dim=1),
+                              reduction="batchmean") * args.temperature ** 2
+            loss += args.alpha_v * v_loss
+            display_dict.update({"vanilla_kd_loss": v_loss})
 
-        if args.uc_mode == 'l':
-            uc_dropout = student.lm_predictions.lm_head.dropout.log_p.sigmoid().detach()
-            display_dict.update({"uc_dropout": uc_dropout})
-        elif args.uc_mode == 'b':
-            mu = student.lm_predictions.lm_head.dropout.bnn_layer[0].mu.mean().detach()
-            log_sigma = student.lm_predictions.lm_head.dropout.bnn_layer[0].log_sigma.mean().detach()
-            display_dict.update({"mu": mu, "log_sigma": log_sigma})
-        else:
-            uc_dropout = student.lm_predictions.lm_head.dropout.drop_prob
-            display_dict.update({"uc_dropout": uc_dropout})
+        display_dict.update({"total_loss": loss})
 
         # reduce losses over all GPUs for logging purposes
         display_dict_reduced = dist.reduce_dict(display_dict)
@@ -179,8 +170,6 @@ def evaluate(
         split="test",
 ):
     model.eval()
-    if args.uc_eval:
-        model.lm_predictions.lm_head.dropout.train()
     metric_logger = MetricLogger(delimiter="  ")
     header = f"{split}:"
 
@@ -219,7 +208,6 @@ def evaluate(
         delay = args.max_feats if args.use_video else 0
 
         logits = output["logits"][:, delay:][mask]
-        reps = output["last_hidden_state"][:, delay:][mask]
 
         logits = logits.softmax(-1)
         topk_aids = torch.topk(logits, max(thresholds), -1).indices

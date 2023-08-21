@@ -37,9 +37,6 @@ from transformers.modeling_outputs import (
 from transformers.modeling_utils import PreTrainedModel
 from transformers import DebertaV2Config
 
-from .learnable_dropout import ConcreteDropout
-from .bnn import BNN
-
 
 _CONFIG_FOR_DOC = "DebertaV2Config"
 _TOKENIZER_FOR_DOC = "DebertaV2Tokenizer"
@@ -1319,8 +1316,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
         dropout=0.1,
         n_ans=0,
         freeze_last=True,
-        uc_dropout=0.1,
-        uc_mode=''
+        uc_dropout=0.1
     ):
         """
         :param config: BiLM configuration
@@ -1345,7 +1341,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
             ft_ln,
             dropout,
         )
-        self.lm_predictions = DebertaV2OnlyMLMHead(config, uc_dropout, uc_mode)
+        self.lm_predictions = DebertaV2OnlyMLMHead(config, uc_dropout)
         self.features_dim = features_dim
         if freeze_mlm:
             for n, p in self.lm_predictions.named_parameters():
@@ -1526,7 +1522,7 @@ class DebertaV2ForMaskedLM(DebertaV2PreTrainedModel):
 
 # copied from transformers.models.bert.BertLMPredictionHead with bert -> deberta
 class DebertaV2LMPredictionHead(nn.Module):
-    def __init__(self, config, dropout=0.1, uc_mode=None):
+    def __init__(self, config, dropout=0.1):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         if isinstance(config.hidden_act, str):
@@ -1546,13 +1542,7 @@ class DebertaV2LMPredictionHead(nn.Module):
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
         self.decoder.bias = self.bias  # only for compatiblity
 
-        self.uc_mode = uc_mode
-        if uc_mode == 'l':
-            self.dropout = ConcreteDropout(dropout)
-        elif uc_mode == 'b':
-            self.dropout = BNN(config.hidden_size, mu=dropout)
-        else:
-            self.dropout = StableDropout(dropout)
+        self.dropout = StableDropout(dropout)
 
     def forward(self, hidden_states, embedding_weight, bias, enable_dropout):
         if enable_dropout:
@@ -1569,19 +1559,13 @@ class DebertaV2LMPredictionHead(nn.Module):
             logits = torch.matmul(hidden_states, embedding_weight.t().to(hidden_states))
         return logits
 
-    def dropout_reg(self, weight_decay=1e-6):
-        if self.uc_mode:
-            return weight_decay * self.dropout.reg()
-        else:
-            return 0
-
 
 # copied from transformers.models.bert.BertOnlyMLMHead with bert -> deberta
 class DebertaV2OnlyMLMHead(nn.Module):
-    def __init__(self, config, dropout=0.1, uc_mode=None):
+    def __init__(self, config, dropout=0.1):
         super().__init__()
         # self.predictions = DebertaV2LMPredictionHead(config)
-        self.lm_head = DebertaV2LMPredictionHead(config, dropout, uc_mode)
+        self.lm_head = DebertaV2LMPredictionHead(config, dropout)
 
     def forward(self, sequence_output, embedding_weight, bias=None, enable_dropout=False):
         prediction_scores = self.lm_head(sequence_output, embedding_weight, bias, enable_dropout)

@@ -447,7 +447,8 @@ def main(args):
         if dist.is_main_process() and args.save_dir:
             print(f"loading best checkpoint from epoch {best_epoch}")
         if args.save_dir:
-            torch.distributed.barrier()  # wait all processes
+            if args.distributed:
+                torch.distributed.barrier()  # wait all processes
             checkpoint = torch.load(
                 os.path.join(args.save_dir, f"best_model.pth"),
                 map_location="cpu",
