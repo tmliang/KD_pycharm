@@ -12,7 +12,8 @@ name2folder = {
     "activitynet": "ActivityNet-QA",
     "tgif": "TGIF-QA",
     "how2qa": "How2QA",
-    "tvqa": "TVQA"
+    "tvqa": "TVQA",
+    "agqa": "AGQA"
 }
 
 
@@ -136,7 +137,22 @@ def get_args_parser():
         "--tgif_vocab_path",
         default=os.path.join(DATA_DIR, name2folder["tgif"], "vocab.json"),
     )
-
+    parser.add_argument(
+        "--agqa_features_path",
+        default=os.path.join(DATA_DIR, name2folder["agqa"], "clipvitl14.pth"),
+    )
+    parser.add_argument(
+        "--agqa_train_csv_path",
+        default=os.path.join(DATA_DIR, name2folder["agqa"], "train.csv"),
+    )
+    parser.add_argument(
+        "--agqa_test_csv_path",
+        default=os.path.join(DATA_DIR, name2folder["agqa"], "test.csv"),
+    )
+    parser.add_argument(
+        "--agqa_vocab_path",
+        default=os.path.join(DATA_DIR, name2folder["agqa"], "vocab.json"),
+    )
     # Training hyper-parameters
     parser.add_argument("--lr", default=5e-5, type=float, help="learning rate")
     parser.add_argument(
@@ -371,13 +387,4 @@ def get_args_parser():
     parser.add_argument("--alpha_l", default=0, type=float)
     parser.add_argument("--alpha_f", default=0, type=float)
     parser.add_argument("--alpha_p", default=0, type=float)
-
-    # WeightAssigner
-    parser.add_argument("--gnn_layer", type=int, default=2)
-    parser.add_argument("--gnn_dim", type=float, default=64)
-    parser.add_argument("--gnn_dropout", type=float, default=0.1)
-    parser.add_argument("--pair_lr_weight", type=float, default=10)
-    parser.add_argument("--num_edge", type=int, default=8)
-    parser.add_argument("--ds_node", type=int, default=2)
-    parser.add_argument("--ds_edge", type=int, default=4)
     return parser

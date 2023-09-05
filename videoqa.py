@@ -68,17 +68,7 @@ def train_one_epoch(
             encoded["input_ids"] == tokenizer.mask_token_id
         ]
         answer_id = batch_dict["answer_id"].to(device)
-        if dataset_name == "ivqa":
-            a = (answer_id / 2).clamp(max=1)
-            nll = -F.log_softmax(logits, 1, _stacklevel=5)
-            loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
-        elif dataset_name == "vqa":
-            a = (answer_id / 3).clamp(max=1)
-            nll = -F.log_softmax(logits, 1, _stacklevel=5)
-            loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
-        else:
-            loss = F.cross_entropy(logits, answer_id)
-
+        loss = F.cross_entropy(logits, answer_id)
         loss_dict = {"cls_loss": loss}
 
         # reduce losses over all GPUs for logging purposes

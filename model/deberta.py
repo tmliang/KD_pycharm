@@ -37,6 +37,7 @@ from transformers.modeling_outputs import (
 from transformers.modeling_utils import PreTrainedModel
 from transformers import DebertaV2Config
 
+from packaging import version
 
 _CONFIG_FOR_DOC = "DebertaV2Config"
 _TOKENIZER_FOR_DOC = "DebertaV2Tokenizer"
@@ -137,7 +138,10 @@ class XSoftmax(torch.autograd.Function):
     @staticmethod
     def backward(self, grad_output):
         (output,) = self.saved_tensors
-        inputGrad = _softmax_backward_data(grad_output, output, self.dim, output.dtype)
+        if version.parse(torch.__version__) > version.parse("1.10"):
+            inputGrad = _softmax_backward_data(grad_output, output, self.dim, output.dtype)
+        else:
+            inputGrad = _softmax_backward_data(grad_output, output, self.dim, output)
         return inputGrad, None, None
 
 

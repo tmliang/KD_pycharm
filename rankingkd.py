@@ -21,8 +21,7 @@ from args import get_args_parser
 from util.misc import get_mask, adjust_learning_rate
 from util.metrics import MetricLogger
 from kd_loss import ListwiseLoss, PairwiseLoss
-from metrics.ndcg import ndcg_at_k
-from metrics.eval_metrics import mean_average_precision
+from metrics.eval_metrics import ndcg_at_k
 
 
 def train_one_epoch(
@@ -91,20 +90,20 @@ def train_one_epoch(
         answer_id = batch_dict["answer_id"].to(device)
 
         loss = 0
-
-        if dataset_name == "ivqa":
-            a = (answer_id / 2).clamp(max=1)
-            nll = -F.log_softmax(s_logits, 1, _stacklevel=5)
-            c_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
-        else:
-            c_loss = F.cross_entropy(s_logits, answer_id)
+        c_loss = F.cross_entropy(s_logits, answer_id)
+        # if dataset_name == "ivqa":
+        #     a = (answer_id / 2).clamp(max=1)
+        #     nll = -F.log_softmax(s_logits, 1, _stacklevel=5)
+        #     c_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
+        # else:
+        #     c_loss = F.cross_entropy(s_logits, answer_id)
 
         loss += c_loss
         display_dict = {"cls_loss": c_loss}
 
         # listwise loss
         if args.alpha_l > 0:
-            l_loss = listwise_loss(answer_id, t_logits, s_logits)
+            l_loss = listwise_loss(t_logits, s_logits)
             loss += args.alpha_l * l_loss
             display_dict.update({"list_loss": l_loss})
 
@@ -213,13 +212,12 @@ def evaluate(
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
+        batch_ndcg = ndcg_at_k(logits, answer_id, k=5)
         if dataset_name == "ivqa":
             answer_id = (answer_id / 2).clamp(max=1)
             answer_id_expanded = answer_id.to(device)
         else:
             answer_id_expanded = answer_id.view(-1, 1).expand_as(topk_aids).to(device)
-
-        maps = mean_average_precision(topk_aids, answer_id)
 
         agreeings = {}
         for x in thresholds:
@@ -231,21 +229,21 @@ def evaluate(
             else:
                 agreeings[x] = topk_aids[:, :x] == answer_id_expanded[:, :x]
 
-        for i, (qid, gt, pred) in enumerate(
-                zip(qids, answer_id, topk_aids)
+        for i, (qid, gt, pred, ndcg) in enumerate(
+                zip(qids, answer_id, topk_aids, batch_ndcg)
         ):
             res[qid] = {
                 "pred": pred.tolist(),
                 "gt": gt.tolist() if dataset_name == "ivqa" else gt.item(),
-                "map": maps.item()
+                "ndcg": ndcg.item()
             }
             for x in thresholds:
                 res[qid][f"acc{x}"] = agreeings[x][i].sum().detach().cpu().item()
 
-        dico = {"acc": agreeings[1].sum() / len(qids)}
+        dico = {"acc": agreeings[1].mean(), "ndcg": batch_ndcg.mean()}
         dico_reduced = dist.reduce_dict(dico)
         acc_value = dico_reduced["acc"].item()
-        metric_logger.update(acc=acc_value)
+        metric_logger.update(acc=dico_reduced["acc"].item(), ndcg=dico_reduced["ndcg"].item())
 
     all_res = dist.all_gather(res)
     results = reduce(lambda a, b: a.update(b) or a, all_res, {})
@@ -253,13 +251,13 @@ def evaluate(
     out = {}
     for x in thresholds:
         out[f"acc{x}"] = sum(results[qid][f"acc{x}"] for qid in results) / len(results)
-    out["map"] = sum(results[qid][f"map"] for qid in results) / len(results)
+    out["ndcg"] = sum(results[qid]["ndcg"] for qid in results) / len(results)
 
     if dist.is_main_process():
         print(dataset_name)
         for x in thresholds:
             print(f"acc{x}: {out[f'acc{x}']: .2%}")
-        print(f"map@10: {out['map']: .2%}")
+        print(f"ndcg@5: {out['ndcg']: .2%}")
     return results, out
 
 
@@ -326,7 +324,6 @@ def main(args):
     # setting loss
     listwise_loss = ListwiseLoss(args)
     pairwise_loss = PairwiseLoss(args)
-    pairwise_loss.to(device)
 
     # load teacher
     teacher = None
@@ -342,11 +339,10 @@ def main(args):
 
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
-    optimizer = torch.optim.Adam([
-        {'params': params_for_optimization},
-        {'params': pairwise_loss.parameters(), 'lr': args.pair_lr_weight * args.lr},
-    ],
-        lr=args.lr
+    optimizer = torch.optim.Adam(
+        params_for_optimization,
+        lr=args.lr,
+        betas=(args.beta1, args.beta2),
     )
 
     # load student

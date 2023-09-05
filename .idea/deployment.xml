@@ -59,6 +59,9 @@
           </mappings>
           <excludedPaths>
             <excludedPath path="/KD/TRANSFORMERS_CACHE" />
+            <excludedPath path="/KD/data" />
+            <excludedPath path="/KD/distributed" />
+            <excludedPath path="/KD/ckpt" />
           </excludedPaths>
         </serverdata>
       </paths>
@@ -72,6 +75,7 @@
             <excludedPath path="/KD/data" />
             <excludedPath path="/KD/TRANSFORMERS_CACHE" />
             <excludedPath path="/KD/ckpt" />
+            <excludedPath path="/KD/distributed" />
           </excludedPaths>
         </serverdata>
       </paths>
@@ -101,6 +105,20 @@
         </serverdata>
       </paths>
       <paths name="atp">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="tianming@172.18.167.46:22 password">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="tianming@172.18.167.49:22 password">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />

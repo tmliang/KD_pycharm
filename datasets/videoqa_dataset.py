@@ -6,7 +6,6 @@ import pandas as pd
 import collections
 import json
 import pickle
-from datasets.vqa_dataset import build_vqa_dataset
 
 
 class VideoQA_Dataset(Dataset):
@@ -37,13 +36,17 @@ class VideoQA_Dataset(Dataset):
         self.mask = tokenizer.mask_token
         self.fib = fib
         self.type_map = type_map
-        if train:  # for training remove answers that are not in vocab
+        if train and 'agqa' not in csv_path.lower():  # for training remove answers that are not in vocab
             print(len(self.data))
             ok = []
+
+            onehot_flag = True
+            if "answer" not in self.data:
+                onehot_flag = False
+                self.data["answer"] = ""
+
             for i, row in self.data.iterrows():
-                if "answer" in self.data:
-                    answer = row["answer"]
-                else:
+                if not onehot_flag:
                     answer = collections.Counter(
                         [
                             row["answer1"],
@@ -54,6 +57,8 @@ class VideoQA_Dataset(Dataset):
                         ]
                     )
                     answer = answer.most_common(1)[0][0]
+                    self.data.at[i, "answer"] = answer
+                answer = self.data.iloc[i]["answer"]
                 if answer in self.a2id:
                     ok.append(i)
             self.data = self.data[self.data.index.isin(ok)]
@@ -280,26 +285,32 @@ def build_videoqa_dataset(dataset_name, split, args, tokenizer):
         vocab_path = args.lsmdc_vocab_path
         type_map = None
         subtitles_path = args.lsmdc_subtitles_path
+    elif dataset_name == "agqa":
+        if split == "train":
+            csv_path = args.agqa_train_csv_path
+        elif split == "val":
+            csv_path = args.agqa_test_csv_path  # no val set in TGIF
+        elif split == "test":
+            csv_path = args.agqa_test_csv_path
+        features_path = args.agqa_features_path
+        vocab_path = args.agqa_vocab_path
+        type_map = {0: "object", 1: "relation", 2: "action"}
+        subtitles_path = None
 
-    if dataset_name in ["msvd", "msrvtt", "ivqa", "activitynet", "tgif", "lsmdc"]:
-        return VideoQA_Dataset(
-            csv_path=csv_path,
-            features_path=features_path,
-            max_feats=args.max_feats,
-            features_dim=args.features_dim,
-            vocab_path=vocab_path,
-            train=split == "train",
-            prefix=args.prefix,
-            suffix=args.suffix,
-            tokenizer=tokenizer,
-            type_map=type_map,
-            subtitles_path=subtitles_path,
-            use_context=(
-                args.use_context and dataset_name != "tgif"
-            ),  # no speech in GIFs
-            fib=(dataset_name == "lsmdc"),
-        )
-    elif dataset_name == "vqa":
-        return build_vqa_dataset(split, args, tokenizer)
-    else:
-        raise NotImplementedError
+    return VideoQA_Dataset(
+        csv_path=csv_path,
+        features_path=features_path,
+        max_feats=args.max_feats,
+        features_dim=args.features_dim,
+        vocab_path=vocab_path,
+        train=split == "train",
+        prefix=args.prefix,
+        suffix=args.suffix,
+        tokenizer=tokenizer,
+        type_map=type_map,
+        subtitles_path=subtitles_path,
+        use_context=(
+            args.use_context and dataset_name != "tgif"
+        ),  # no speech in GIFs
+        fib=(dataset_name == "lsmdc"),
+    )

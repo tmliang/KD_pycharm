@@ -1,6 +1,0 @@
-{
-    "n_prompt":{"_type":"randint", "_value":[ 0, 10]},
-    "beta":{"_type":"uniform", "_value":[0, 1]},
-    "epochs":{"_type":"choice", "_value":[ 3, 5, 10, 15 ]},
-    "lr":{"_type":"uniform", "_value":[ 0.00001, 0.0001 ]}
-}
