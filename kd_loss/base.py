@@ -31,18 +31,18 @@ class Sampler(nn.Module):
             return samples
 
     def random_sample(self, samples):
-        ind = torch.randperm(samples.size(1))[:self.num].sort()[0]
+        ind = torch.randperm(samples.size(1))[:self.num]
         return samples[:, ind]
 
     def exp_sample(self, samples):
         probs = self.rate * torch.exp(-self.rate * torch.arange(0, samples.size(1)))
-        ind = torch.multinomial(probs, self.num).sort()[0]
+        ind = torch.multinomial(probs, self.num)
         return samples[:, ind]
 
     def zipfs_sample(self, samples):
         Z = 1 / torch.arange(1, samples.size(1)+1)
         Z = Z / Z.sum()
-        ind = torch.multinomial(Z, self.num).sort()[0]
+        ind = torch.multinomial(Z, self.num)
         return samples.gather(1, ind)
 
 

@@ -21,19 +21,33 @@ from args import get_args_parser
 from util.misc import get_mask, adjust_learning_rate
 from util.metrics import MetricLogger
 from kd_loss import ListwiseLoss, PairwiseLoss
-from metrics.ndcg import ndcg_at_k
-from metrics.eval_metrics import mean_average_precision
+from metrics.eval_metrics import ndcg_at_k
 
 
-def ema_update(teacher, student, momentum=0.999):
-    for t_params, s_params in zip(teacher.parameters(), student.parameters()):
-        if s_params.requires_grad:
-            t_params.data.mul_(momentum).add_(s_params.data * (1.0 - momentum))
+def update_ema(model, model_ema, decay):
+    """Apply exponential moving average update.
 
+    The  weights are updated in-place as follow:
+    w_ema = w_ema * decay + (1 - decay) * w
+    Args:
+        model: active model that is being optimized
+        model_ema: running average model
+        decay: exponential decay parameter
+    """
+    with torch.no_grad():
+        if hasattr(model, "module"):
+            # unwrapping DDP
+            model = model.module
+        msd = model.state_dict()
+        for k, ema_v in model_ema.state_dict().items():
+            model_v = msd[k].detach()
+            ema_v.copy_(ema_v * decay + (1.0 - decay) * model_v)
+            
 
 def train_one_epoch(
         teacher: torch.nn.Module,
         student: torch.nn.Module,
+        model_ema: torch.nn.Module,
         tokenizer,
         listwise_loss,
         pairwise_loss,
@@ -92,54 +106,52 @@ def train_one_epoch(
         )
         s_logits = student_output["logits"][:, delay:][mask]
         s_states = student_output["adapter_states"][-1]
-        s_reps = student_output["last_hidden_state"][:, delay:][mask]
 
         answer_id = batch_dict["answer_id"].to(device)
 
-        # listwise loss
-        l_loss = listwise_loss(answer_id, t_logits, s_logits)
-
-        # pairwise loss
-        if args.alpha_p > 0:
-            sample_logits = []
-            # k = random.randint(2, args.num_sample)
-            for _ in range(args.num_sample):
-                sample_logits.append(teacher.predict(t_reps, enable_dropout=True))
-            sample_logits = torch.stack(sample_logits, dim=1)
-            if i_batch == 1083:
-                print(1)
-            p_loss = pairwise_loss(answer_id, t_logits, s_logits, sample_logits)
-        else:
-            p_loss = torch.zeros_like(l_loss)
-
-        # feature loss
-        f_loss = F.mse_loss(t_states, s_states) if args.alpha_f > 0 else torch.zeros_like(l_loss)
-
-        # vanilla kd loss
-        v_loss = F.kl_div(torch.log_softmax(s_logits / args.temperature, dim=1),
-                          torch.softmax(t_logits / args.temperature, dim=1),
-                          reduction="batchmean") * args.temperature ** 2 \
-            if args.alpha_v > 0 else torch.zeros_like(l_loss)
-
+        loss = 0
         if dataset_name == "ivqa":
             a = (answer_id / 2).clamp(max=1)
             nll = -F.log_softmax(s_logits, 1, _stacklevel=5)
             c_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
         else:
-            c_loss = F.cross_entropy(s_logits, answer_id, label_smoothing=args.label_smoothing)
+            c_loss = F.cross_entropy(s_logits, answer_id)
 
-        loss = c_loss + args.alpha_l * l_loss + args.alpha_f * f_loss + args.alpha_v * v_loss + args.alpha_p * p_loss
-        ndcg = ndcg_at_k(answer_id, t_logits, s_logits, k=20)
-        display_dict = {"loss": loss, "cls_loss": c_loss, "list_loss": l_loss,  "ndcg": ndcg}
+        loss += c_loss
+        display_dict = {"cls_loss": c_loss}
 
+        # listwise loss
+        if args.alpha_l > 0:
+            l_loss = listwise_loss(t_logits, s_logits)
+            loss += args.alpha_l * l_loss
+            display_dict.update({"list_loss": l_loss})
+
+        # pairwise loss
         if args.alpha_p > 0:
+            sample_logits = []
+            k = random.randint(2, args.num_sample)
+            for _ in range(k):
+                sample_logits.append(teacher.predict(t_reps, enable_dropout=True))
+            sample_logits = torch.stack(sample_logits, dim=1)
+            p_loss = pairwise_loss(answer_id, t_logits, s_logits, sample_logits)
+            loss += args.alpha_p * p_loss
             display_dict.update({"pair_loss": p_loss})
 
+        # feature loss
         if args.alpha_f > 0:
+            f_loss = F.mse_loss(t_states, s_states)
+            loss += args.alpha_f * f_loss
             display_dict.update({"feat_loss": f_loss})
 
+        # vanilla kd loss
         if args.alpha_v > 0:
-            display_dict.update({"logits_kd_loss": v_loss})
+            v_loss = F.kl_div(torch.log_softmax(s_logits / args.temperature, dim=1),
+                              torch.softmax(t_logits / args.temperature, dim=1),
+                              reduction="batchmean") * args.temperature ** 2
+            loss += args.alpha_v * v_loss
+            display_dict.update({"vanilla_kd_loss": v_loss})
+
+        display_dict.update({"total_loss": loss})
 
         # reduce losses over all GPUs for logging purposes
         display_dict_reduced = dist.reduce_dict(display_dict)
@@ -150,14 +162,14 @@ def train_one_epoch(
             torch.nn.utils.clip_grad_norm_(student.parameters(), max_norm)
         optimizer.step()
 
-        # ema_update(teacher, student)
-
         adjust_learning_rate(
             optimizer,
             curr_step=epoch * len(data_loader) + i_batch,
             num_training_steps=num_training_steps,
             args=args,
         )
+        if model_ema is not None:
+            update_ema(student, model_ema, 0.9998)
 
         metric_logger.update(**display_dict_reduced)
     # gather the stats from all processes
@@ -221,13 +233,12 @@ def evaluate(
         topk_aids = torch.topk(logits, max(thresholds), -1).indices
 
         answer_id, qids = batch_dict["answer_id"].to(device), batch_dict["qid"]
+        batch_ndcg = ndcg_at_k(logits, answer_id, k=5)
         if dataset_name == "ivqa":
             answer_id = (answer_id / 2).clamp(max=1)
             answer_id_expanded = answer_id.to(device)
         else:
             answer_id_expanded = answer_id.view(-1, 1).expand_as(topk_aids).to(device)
-
-        maps = mean_average_precision(topk_aids, answer_id)
 
         agreeings = {}
         for x in thresholds:
@@ -239,21 +250,21 @@ def evaluate(
             else:
                 agreeings[x] = topk_aids[:, :x] == answer_id_expanded[:, :x]
 
-        for i, (qid, gt, pred) in enumerate(
-                zip(qids, answer_id, topk_aids)
+        for i, (qid, gt, pred, ndcg) in enumerate(
+                zip(qids, answer_id, topk_aids, batch_ndcg)
         ):
             res[qid] = {
                 "pred": pred.tolist(),
                 "gt": gt.tolist() if dataset_name == "ivqa" else gt.item(),
-                "map": maps.item()
+                "ndcg": ndcg.item()
             }
             for x in thresholds:
                 res[qid][f"acc{x}"] = agreeings[x][i].sum().detach().cpu().item()
 
-        dico = {"acc": agreeings[1].sum() / len(qids)}
+        dico = {"acc": agreeings[1].mean(), "ndcg": batch_ndcg.mean()}
         dico_reduced = dist.reduce_dict(dico)
         acc_value = dico_reduced["acc"].item()
-        metric_logger.update(acc=acc_value)
+        metric_logger.update(acc=dico_reduced["acc"].item(), ndcg=dico_reduced["ndcg"].item())
 
     all_res = dist.all_gather(res)
     results = reduce(lambda a, b: a.update(b) or a, all_res, {})
@@ -261,13 +272,13 @@ def evaluate(
     out = {}
     for x in thresholds:
         out[f"acc{x}"] = sum(results[qid][f"acc{x}"] for qid in results) / len(results)
-    out["map"] = sum(results[qid][f"map"] for qid in results) / len(results)
+    out["ndcg"] = sum(results[qid]["ndcg"] for qid in results) / len(results)
 
     if dist.is_main_process():
         print(dataset_name)
         for x in thresholds:
             print(f"acc{x}: {out[f'acc{x}']: .2%}")
-        print(f"map@10: {out['map']: .2%}")
+        print(f"ndcg@5: {out['ndcg']: .2%}")
     return results, out
 
 
@@ -334,15 +345,25 @@ def main(args):
     # setting loss
     listwise_loss = ListwiseLoss(args)
     pairwise_loss = PairwiseLoss(args)
-    pairwise_loss.to(device)
+
+    # load teacher
+    teacher = None
+    if args.teacher_load and not args.eval:
+        if dist.is_main_process():
+            print("loading teacher from %s" % args.teacher_load)
+        teacher = copy.deepcopy(model)
+        checkpoint = torch.load(args.teacher_load, map_location="cpu")
+        teacher.load_state_dict(checkpoint["model"], strict=False)
+        teacher.eval()
+        teacher.lm_predictions.lm_head.dropout.train()
+        model.lm_predictions.lm_head.dropout = teacher.lm_predictions.lm_head.dropout
 
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
-    optimizer = torch.optim.Adam([
-        {'params': params_for_optimization},
-        {'params': pairwise_loss.parameters(), 'lr': args.pair_lr_weight * args.lr},
-    ],
-        lr=args.lr
+    optimizer = torch.optim.AdamW(
+        params_for_optimization,
+        lr=args.lr,
+        betas=(args.beta1, args.beta2),
     )
 
     # load student
@@ -371,13 +392,10 @@ def main(args):
     model.set_answer_embeddings(
         aid2tokid.to(model.device), freeze_last=args.freeze_last
     )  # init answer embedding module
+    model_ema = copy.deepcopy(model)
+
     if not args.eval:
-
-        # load teacher
-        teacher = copy.deepcopy(model)
-        teacher.eval()
-        teacher.lm_predictions.lm_head.dropout.train()
-
+        teacher.set_answer_embeddings(aid2tokid.to(model.device))
         if dist.is_main_process():
             print("Start training")
         start_time = time.time()
@@ -391,6 +409,7 @@ def main(args):
             train_stats = train_one_epoch(
                 teacher=teacher,
                 student=model,
+                model_ema=model_ema,
                 tokenizer=tokenizer,
                 listwise_loss=listwise_loss,
                 pairwise_loss=pairwise_loss,
@@ -408,7 +427,7 @@ def main(args):
                 print(f"Validating {args.dataset}")
 
                 curr_val_stats, out = evaluate(
-                    model=model,
+                    model=model_ema,
                     tokenizer=tokenizer,
                     data_loader=dataloader_test,
                     device=device,
@@ -429,7 +448,7 @@ def main(args):
                         )
                         dist.save_on_master(
                             {
-                                "model": model.state_dict(),
+                                "model": model_ema.state_dict(),
                                 "optimizer": optimizer.state_dict(),
                                 "epoch": epoch,
                                 "args": args,

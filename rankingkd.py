@@ -85,21 +85,21 @@ def train_one_epoch(
         )
         s_logits = student_output["logits"][:, delay:][mask]
         s_states = student_output["adapter_states"][-1]
-        s_reps = student_output["last_hidden_state"][:, delay:][mask]
 
         answer_id = batch_dict["answer_id"].to(device)
 
-        loss = 0
-        c_loss = F.cross_entropy(s_logits, answer_id)
-        # if dataset_name == "ivqa":
-        #     a = (answer_id / 2).clamp(max=1)
-        #     nll = -F.log_softmax(s_logits, 1, _stacklevel=5)
-        #     c_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
-        # else:
-        #     c_loss = F.cross_entropy(s_logits, answer_id)
+        loss = torch.zeros(1, device=device)
+        display_dict = {}
 
-        loss += c_loss
-        display_dict = {"cls_loss": c_loss}
+        if args.use_cls:
+            if dataset_name == "ivqa":
+                a = (answer_id / 2).clamp(max=1)
+                nll = -F.log_softmax(s_logits, 1, _stacklevel=5)
+                c_loss = (nll * a / a.sum(1, keepdim=True).clamp(min=1)).sum(dim=1).mean()
+            else:
+                c_loss = F.cross_entropy(s_logits, answer_id)
+            loss += c_loss
+            display_dict.update({"cls_loss": c_loss})
 
         # listwise loss
         if args.alpha_l > 0:
@@ -240,7 +240,7 @@ def evaluate(
             for x in thresholds:
                 res[qid][f"acc{x}"] = agreeings[x][i].sum().detach().cpu().item()
 
-        dico = {"acc": agreeings[1].mean(), "ndcg": batch_ndcg.mean()}
+        dico = {"acc": agreeings[1].float().mean(), "ndcg": batch_ndcg.mean()}
         dico_reduced = dist.reduce_dict(dico)
         acc_value = dico_reduced["acc"].item()
         metric_logger.update(acc=dico_reduced["acc"].item(), ndcg=dico_reduced["ndcg"].item())
@@ -339,7 +339,7 @@ def main(args):
 
     # Set up optimizer
     params_for_optimization = list(p for p in model.parameters() if p.requires_grad)
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         params_for_optimization,
         lr=args.lr,
         betas=(args.beta1, args.beta2),

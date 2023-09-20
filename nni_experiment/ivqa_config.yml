@@ -1,31 +1,22 @@
 search_space:
-  uc_drop:
-      _type: choice
-      _value: [0.1, 0.3, 0.5, 0.7, 0.9]
-  alpha_p:
+  alpha_l:
     _type: choice
-    _value: [ 0.1, 0.5, 1, 5, 10, 20, 50, 100, 500 ]
-  p_factor:
-    _type: choice
-    _value: [ 0.1, 1, 10, 50, 100]
-  max_token:
-    _type: choice
-    _value: [ 128, 256, 384, 350]
-  max_feats:
-    _type: choice
-    _value: [ 8, 10, 15, 20]
-  label_smoothing:
-    _type: choice
-    _value: [ 0, 0.1, 0.3, 0.5]
-  num_sample:
+    _value: [ 10, 50, 100 ]
+  temperature:
     _type: randint
-    _value: [ 3, 30 ]
-  epochs:
-    _type: randint
-    _value: [ 5, 30 ]
+    _value: [ 1, 30 ]
+  neg_sampler:
+    _type: choice
+    _value: ["random", "exp", "zipfs"]
+  n_pos:
+    _type: choice
+    _value: [ 10, 50, 100, 300, 500, 1000 ]
+  n_neg:
+    _type: choice
+    _value: [ 10, 50, 100, 300, 500, 1000 ]
 
 
-trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset ivqa --teacher_load=ckpt/ivqa/ivqa_a.pth --load=ckpt/ivqa/ivqa_b.pth --batch_size=4 --batch_size_val=32 --pair_loss=margin_rank
+trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset ivqa --teacher_load=ckpt/ivqa/teacher.pth --load=ckpt/ivqa/student.pth --batch_size=6 --batch_size_val=32 --list_loss=listnet --epochs=25 --max_tokens=368 --max_feats=20
 trial_code_directory: ~/KD
 
 trialGpuNumber: 1
@@ -41,4 +32,4 @@ training_service:
   platform: local
   useActiveGpu: True
   maxTrialNumberPerGpu: 1
-  gpuIndices: 3, 4, 5, 6
+  gpuIndices: 2, 3, 4, 6

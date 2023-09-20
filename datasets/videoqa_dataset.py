@@ -39,14 +39,10 @@ class VideoQA_Dataset(Dataset):
         if train and 'agqa' not in csv_path.lower():  # for training remove answers that are not in vocab
             print(len(self.data))
             ok = []
-
-            onehot_flag = True
-            if "answer" not in self.data:
-                onehot_flag = False
-                self.data["answer"] = ""
-
             for i, row in self.data.iterrows():
-                if not onehot_flag:
+                if "answer" in self.data:
+                    answer = row["answer"]
+                else:
                     answer = collections.Counter(
                         [
                             row["answer1"],
@@ -57,8 +53,6 @@ class VideoQA_Dataset(Dataset):
                         ]
                     )
                     answer = answer.most_common(1)[0][0]
-                    self.data.at[i, "answer"] = answer
-                answer = self.data.iloc[i]["answer"]
                 if answer in self.a2id:
                     ok.append(i)
             self.data = self.data[self.data.index.isin(ok)]

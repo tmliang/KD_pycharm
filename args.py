@@ -343,7 +343,7 @@ def get_args_parser():
     parser.add_argument(
         "--lambda_weight",
         type=str,
-        default='ndcg',
+        default='ndcg2',
         choices=["ndcg", "ndcg1", "ndcg2", "ndcg2++"],
         help="weight scheme in lambda losses"
     )
@@ -351,7 +351,7 @@ def get_args_parser():
         "--list_loss",
         type=str,
         default='listnet',
-        choices=["listnet", "stlistnet", "listmle", "lambda", "margin_mse", "margin_rank", "ranknet"]
+        choices=["listnet", "stlistnet", "listmle", "lambda"]
     )
     parser.add_argument(
         "--pair_loss",
@@ -365,21 +365,9 @@ def get_args_parser():
         default=1.,
         help="factors in pairwise losses, i.e., margin in margin_rank, and temperature in ranknet",
     )
-    parser.add_argument(
-        "--sigma",
-        type=float,
-        default=1.
-    )
-    parser.add_argument(
-        "--tau",
-        type=float,
-        default=1.
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=1.
-    )
+    parser.add_argument("--sigma", type=float, default=1.)
+    parser.add_argument("--tau", type=float, default=1.)
+    parser.add_argument("--temperature", type=float, default=1.)
     parser.add_argument("--label_smoothing", type=float, default=0)
     parser.add_argument("--uc_drop", type=float, default=0)
     parser.add_argument("--num_sample", type=int, default=10)
@@ -387,4 +375,5 @@ def get_args_parser():
     parser.add_argument("--alpha_l", default=0, type=float)
     parser.add_argument("--alpha_f", default=0, type=float)
     parser.add_argument("--alpha_p", default=0, type=float)
+    parser.add_argument("--no_cls", action="store_false", dest="use_cls", help="disables usage of cls_loss")
     return parser
