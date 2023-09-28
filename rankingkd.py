@@ -114,7 +114,7 @@ def train_one_epoch(
             for _ in range(k):
                 sample_logits.append(teacher.predict(t_reps, enable_dropout=True))
             sample_logits = torch.stack(sample_logits, dim=1)
-            p_loss = pairwise_loss(answer_id, t_logits, s_logits, sample_logits)
+            p_loss = pairwise_loss(answer_id, t_logits, s_logits, sample_logits, max_vocab=args.truncate_ans_pair)
             loss += args.alpha_p * p_loss
             display_dict.update({"pair_loss": p_loss})
 

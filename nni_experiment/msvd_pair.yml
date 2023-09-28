@@ -10,7 +10,7 @@ search_space:
     _value: [ 3, 5, 8, 10, 12, 15 ]
 
 
-trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msvd --teacher_load=ckpt/msvd/msvd_a.pth --load=ckpt/msvd/msvd_b.pth --batch_size=4 --batch_size_val=32 --pair_loss=margin_rank
+trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msrvtt --teacher_load=ckpt/msrvtt/teacher.pth --load=ckpt/msrvtt/student.pth --batch_size=10 --batch_size_val=80
 trial_code_directory: ~/KD
 
 trialGpuNumber: 1

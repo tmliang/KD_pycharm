@@ -365,6 +365,7 @@ def get_args_parser():
         default=1.,
         help="factors in pairwise losses, i.e., margin in margin_rank, and temperature in ranknet",
     )
+    parser.add_argument("--truncate_ans_pair", type=int, default=5000)
     parser.add_argument("--sigma", type=float, default=1.)
     parser.add_argument("--tau", type=float, default=1.)
     parser.add_argument("--temperature", type=float, default=1.)

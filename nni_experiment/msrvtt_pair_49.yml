@@ -1,0 +1,41 @@
+search_space:
+  uc_drop:
+      _type: choice
+      _value: [0.1, 0.3]
+  alpha_p:
+    _type: choice
+    _value: [ 0.1, 1, 10, 50, 100, 500 ]
+  p_factor:
+    _type: choice
+    _value: [ 0.1, 1, 10, 50, 100]
+  max_tokens:
+    _type: choice
+    _value: [ 128, 256, 384]
+  max_feats:
+    _type: choice
+    _value: [ 5, 10, 15, 20]
+  label_smoothing:
+    _type: choice
+    _value: [ 0, 0.1, 0.3, 0.5]
+  epochs:
+    _type: randint
+    _value: [ 5, 20 ]
+
+
+trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msrvtt --teacher_load=ckpt/msrvtt/teacher.pth --load=ckpt/msrvtt/student.pth --batch_size=10 --batch_size_val=80 --pair_loss=margin_rank --truncate_ans_pair=2500
+trial_code_directory: ~/KD
+
+trialGpuNumber: 1
+trial_concurrency: 4
+max_trial_number: 1000
+
+tuner:
+  name: TPE
+  class_args:
+    optimize_mode: maximize
+
+training_service:
+  platform: local
+  useActiveGpu: True
+  maxTrialNumberPerGpu: 1
+  gpuIndices: 0,1,2,4,6

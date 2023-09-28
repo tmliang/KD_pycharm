@@ -10,7 +10,7 @@ def pair_minus(x):
     return x.unsqueeze(-1) - x.unsqueeze(-2)
 
 
-def Sinkhorn(cost, max_iter=100, temperature=0.1, thresh=1e-20):
+def Sinkhorn(cost, max_iter=100, temperature=1, thresh=1e-8):
     bsz, m, n = cost.size()
     cost = torch.exp(-cost / temperature)
     u = torch.zeros(bsz, m, 1).to(cost).fill_(1. / m)

@@ -31,18 +31,18 @@ class Sampler(nn.Module):
             return samples
 
     def random_sample(self, samples):
-        ind = torch.randperm(samples.size(1))[:self.num]
+        ind = torch.randperm(samples.size(1))[:self.num].sort()[0]
         return samples[:, ind]
 
     def exp_sample(self, samples):
         probs = self.rate * torch.exp(-self.rate * torch.arange(0, samples.size(1)))
-        ind = torch.multinomial(probs, self.num)
+        ind = torch.multinomial(probs, self.num).sort()[0]
         return samples[:, ind]
 
     def zipfs_sample(self, samples):
         Z = 1 / torch.arange(1, samples.size(1)+1)
         Z = Z / Z.sum()
-        ind = torch.multinomial(Z, self.num)
+        ind = torch.multinomial(Z, self.num).sort()[0]
         return samples.gather(1, ind)
 
 
@@ -106,12 +106,17 @@ class PairwiseLoss(RankingLoss):
         self.factor = args.p_factor
         self.loss_func = args.pair_loss
 
-    def forward(self, gt, t_score, s_score, sample_dist, scalar=1000):
+    def forward(self, gt, t_score, s_score, sample_dist, scalar=1000, max_vocab=2500):
         bsz, n_ans = t_score.size()[:2]
+        if n_ans > max_vocab:
+            n_ans = max_vocab
+            t_score = t_score[:, :n_ans]
+            s_score = s_score[:, :n_ans]
+            sample_dist = sample_dist[:, :, :n_ans]
         device = t_score.device
-        uc_pair = pair_minus(sample_dist).std(1)
+        uc_pair = pair_minus(sample_dist).std(1).clip(max=15.)
         mask = torch.eye(n_ans, device=device, dtype=torch.bool).expand(bsz, -1, -1)
-        diag_values = torch.full((bsz*n_ans,), 1e10, device=device)
+        diag_values = torch.full((bsz*n_ans,), 100., device=device)
         uc_pair = uc_pair.masked_scatter(mask, diag_values)
         weight = Sinkhorn(uc_pair)
         weight = weight * scalar
