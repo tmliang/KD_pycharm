@@ -1,6 +1,9 @@
 import os
 from .deberta import DebertaV2ForMaskedLM
 from transformers import DebertaV2Tokenizer
+import logging
+logging.getLogger("transformers").setLevel(logging.ERROR)
+
 
 TRANSFORMERS_CACHE = 'TRANSFORMERS_CACHE'
 model_name = os.path.join(TRANSFORMERS_CACHE, 'deberta-v2-xlarge')

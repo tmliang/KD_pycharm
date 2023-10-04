@@ -174,14 +174,13 @@ def get_args_parser():
     parser.add_argument(
         "--epochs", default=10, type=int, help="number of training epochs"
     )
-    parser.add_argument("--optimizer", default="adam", type=str)
     parser.add_argument(
         "--clip_max_norm", default=0.1, type=float, help="gradient clipping max norm"
     )
     parser.add_argument(
         "--schedule",
         default="linear_with_warmup",
-        choices=["", "linear_with_warmup", "cosine_annealing_with_warmup"],
+        choices=["", "linear_with_warmup"],
         help="learning rate decay schedule, default is constant",
     )
     parser.add_argument(

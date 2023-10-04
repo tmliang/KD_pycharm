@@ -22,7 +22,7 @@ search_space:
     _value: [ 5, 20 ]
 
 
-trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msrvtt --teacher_load=ckpt/msrvtt/teacher.pth --load=ckpt/msrvtt/student.pth --batch_size=10 --batch_size_val=80 --pair_loss=margin_rank --truncate_ans_pair=2500
+trial_command: PYTHONPATH=. python nni_experiment/rankingkd.py --dataset msrvtt --teacher_load=ckpt/msrvtt/teacher.pth --load=ckpt/msrvtt/student.pth --batch_size=10 --batch_size_val=80 --truncate_ans_pair=2500
 trial_code_directory: ~/KD
 
 trialGpuNumber: 1

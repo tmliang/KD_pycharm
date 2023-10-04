@@ -241,7 +241,7 @@ def main(args):
     if dist.is_main_process():
         if args.save_dir and not (os.path.isdir(args.save_dir)):
             os.makedirs(os.path.join(args.save_dir), exist_ok=True)
-        print(args)
+        # print(args)
 
     device = torch.device(args.device)
 
